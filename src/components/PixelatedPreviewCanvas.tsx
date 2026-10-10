@@ -18,6 +18,9 @@ interface PixelatedPreviewCanvasProps {
   ) => void;
   highlightColorKey?: string | null;
   onHighlightComplete?: () => void;
+  showGrid?: boolean;
+  interactive?: boolean;
+  transparentExternal?: boolean;
 }
 
 // 绘制像素化画布的函数
@@ -26,7 +29,9 @@ const drawPixelatedCanvas = (
   canvas: HTMLCanvasElement | null,
   dims: { N: number; M: number } | null,
   highlightColorKey?: string | null,
-  isHighlighting?: boolean
+  isHighlighting?: boolean,
+  showGrid: boolean = true,
+  transparentExternal: boolean = false
 ) => {
   if (!canvas || !dims || !dataToDraw) {
     console.warn("drawPixelatedCanvas: Missing required parameters");
@@ -53,31 +58,42 @@ const drawPixelatedCanvas = (
   const cellHeightOutput = outputHeight / M;
 
   pixelatedCtx.clearRect(0, 0, outputWidth, outputHeight);
-  pixelatedCtx.lineWidth = 0.5; // Keep line width thin
+  pixelatedCtx.imageSmoothingEnabled = false;
+  pixelatedCtx.lineWidth = 0.5;
 
   for (let j = 0; j < M; j++) {
     for (let i = 0; i < N; i++) {
       const cellData = dataToDraw[j]?.[i];
       if (!cellData) continue;
 
-      const drawX = i * cellWidthOutput;
-      const drawY = j * cellHeightOutput;
+      const drawX = Math.floor(i * cellWidthOutput);
+      const drawY = Math.floor(j * cellHeightOutput);
+      const cellW = Math.max(1, Math.floor((i + 1) * cellWidthOutput) - drawX);
+      const cellH = Math.max(1, Math.floor((j + 1) * cellHeightOutput) - drawY);
+      // 效果图无网格时多画 1px，避免非整数格子留下细缝
+      const fillW = showGrid || i === N - 1 ? cellW : cellW + 1;
+      const fillH = showGrid || j === M - 1 ? cellH : cellH + 1;
 
-      // Fill cell color using mode-specific background for external cells
-      if (cellData.isExternal) {
-        pixelatedCtx.fillStyle = externalBackgroundColor;
+      const isHollow =
+        cellData.isExternal ||
+        cellData.key === 'ERASE' ||
+        (typeof cellData.color === 'string' && cellData.color.toLowerCase() === 'transparent');
+      if (isHollow) {
+        if (!transparentExternal) {
+          pixelatedCtx.fillStyle = externalBackgroundColor;
+          pixelatedCtx.fillRect(drawX, drawY, fillW, fillH);
+        }
       } else {
         pixelatedCtx.fillStyle = cellData.color;
+        pixelatedCtx.fillRect(drawX, drawY, fillW, fillH);
       }
-      pixelatedCtx.fillRect(drawX, drawY, cellWidthOutput, cellHeightOutput);
 
       // 如果正在高亮且当前单元格不是目标颜色，添加半透明黑色蒙版
-      if (isHighlighting && highlightColorKey) {
+      if (isHighlighting && highlightColorKey && !isHollow) {
         let shouldDim = false;
         
         if (cellData.isExternal) {
-          // 外部单元格总是变深色（因为它们不是要高亮的颜色）
-          shouldDim = true;
+          shouldDim = !transparentExternal;
         } else {
           // 内部单元格：如果颜色不匹配则变深色
           shouldDim = cellData.color.toUpperCase() !== highlightColorKey.toUpperCase();
@@ -85,13 +101,14 @@ const drawPixelatedCanvas = (
         
         if (shouldDim) {
           pixelatedCtx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // 60% 透明度的黑色蒙版
-          pixelatedCtx.fillRect(drawX, drawY, cellWidthOutput, cellHeightOutput);
+          pixelatedCtx.fillRect(drawX, drawY, fillW, fillH);
         }
       }
 
-      // Draw grid lines using mode-specific color
-      pixelatedCtx.strokeStyle = gridLineColor;
-      pixelatedCtx.strokeRect(drawX + 0.5, drawY + 0.5, cellWidthOutput, cellHeightOutput);
+      if (showGrid) {
+        pixelatedCtx.strokeStyle = gridLineColor;
+        pixelatedCtx.strokeRect(drawX + 0.5, drawY + 0.5, cellW, cellH);
+      }
     }
   }
 };
@@ -104,6 +121,9 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   onInteraction,
   highlightColorKey,
   onHighlightComplete,
+  showGrid = true,
+  interactive = true,
+  transparentExternal = false,
 }) => {
   const [darkModeState, setDarkModeState] = useState<boolean | null>(null);
   const touchStartPosRef = useRef<{ x: number; y: number; pageX: number; pageY: number } | null>(null);
@@ -139,9 +159,17 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
     // Ensure darkModeState is not null before drawing
     if (mappedPixelData && gridDimensions && canvasRef.current && darkModeState !== null) {
       console.log(`Redrawing canvas, dark mode: ${darkModeState}`); // Log redraw trigger
-      drawPixelatedCanvas(mappedPixelData, canvasRef.current, gridDimensions, highlightColorKey, isHighlighting);
+      drawPixelatedCanvas(
+        mappedPixelData,
+        canvasRef.current,
+        gridDimensions,
+        highlightColorKey,
+        isHighlighting,
+        showGrid,
+        transparentExternal
+      );
     }
-  }, [mappedPixelData, gridDimensions, canvasRef, darkModeState, highlightColorKey, isHighlighting]); // Add darkModeState dependency
+  }, [mappedPixelData, gridDimensions, canvasRef, darkModeState, highlightColorKey, isHighlighting, showGrid, transparentExternal]);
 
   // 处理高亮效果
   useEffect(() => {
@@ -239,15 +267,15 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   return (
     <canvas
       ref={canvasRef}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      onClick={handleClick}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd} // 添加 onTouchCancel 以处理触摸中断的情况
-      className={`border border-gray-300 dark:border-gray-600 max-w-full h-auto rounded block ${
-        isManualColoringMode ? 'cursor-pointer' : 'cursor-grab' // 改为 grab 光标提示可以拖动
+      onMouseMove={interactive ? handleMouseMove : undefined}
+      onMouseLeave={interactive ? handleMouseLeave : undefined}
+      onClick={interactive ? handleClick : undefined}
+      onTouchStart={interactive ? handleTouchStart : undefined}
+      onTouchMove={interactive ? handleTouchMove : undefined}
+      onTouchEnd={interactive ? handleTouchEnd : undefined}
+      onTouchCancel={interactive ? handleTouchEnd : undefined}
+      className={`border border-gray-300 dark:border-gray-600 w-full max-w-full h-auto rounded block ${
+        !interactive ? 'cursor-default' : isManualColoringMode ? 'cursor-pointer' : 'cursor-grab'
       }`}
       style={{
         imageRendering: 'pixelated',

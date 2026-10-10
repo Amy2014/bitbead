@@ -1,12 +1,14 @@
 import { PaletteColor } from './pixelation';
 import colorSystemMapping from '../app/colorSystemMapping.json';
+import mard221PaletteData from '../app/mard221Palette.json';
 
 // 定义色号系统类型并导出
-export type ColorSystem = 'MARD' | 'COCO' | '漫漫' | '盼盼' | '咪小窝';
+export type ColorSystem = 'MARD' | 'MARD221' | 'COCO' | '漫漫' | '盼盼' | '咪小窝';
 
 // 色号系统选项
 export const colorSystemOptions = [
   { key: 'MARD', name: 'MARD' },
+  { key: 'MARD221', name: 'MARD 221' },
   { key: 'COCO', name: 'COCO' },
   { key: '漫漫', name: '漫漫' },
   { key: '盼盼', name: '盼盼' },
@@ -16,6 +18,56 @@ export const colorSystemOptions = [
 // 类型定义
 type ColorMapping = Record<string, Record<ColorSystem, string>>;
 const typedColorSystemMapping = colorSystemMapping as ColorMapping;
+
+type Mard221Entry = { key: string; hex: string };
+const mard221List = mard221PaletteData as Mard221Entry[];
+const mard221HexToCode = new Map<string, string>();
+const mard221CodeToHex = new Map<string, string>();
+mard221List.forEach((item) => {
+  const hex = item.hex.toUpperCase();
+  mard221HexToCode.set(hex, item.key);
+  mard221CodeToHex.set(item.key, hex);
+});
+
+function normalizeMard221Code(code: string): string | undefined {
+  const match = code.trim().toUpperCase().match(/^([A-Z]+)0*([0-9]+)$/);
+  if (!match) return undefined;
+  const candidate = `${match[1]}${parseInt(match[2], 10)}`;
+  return mard221CodeToHex.has(candidate) ? candidate : undefined;
+}
+
+function lookupMard221Code(hexValue: string): string | undefined {
+  const normalizedHex = hexValue.toUpperCase();
+  const direct = mard221HexToCode.get(normalizedHex);
+  if (direct) return direct;
+  const mardCode = typedColorSystemMapping[normalizedHex]?.MARD;
+  if (mardCode) {
+    return normalizeMard221Code(mardCode);
+  }
+  return undefined;
+}
+
+function parseHexRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#([0-9A-Fa-f]{6})$/.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+export function isMard221System(colorSystem: ColorSystem): boolean {
+  return colorSystem === 'MARD221';
+}
+
+export function getMard221Palette(): PaletteColor[] {
+  return mard221List
+    .map(({ hex }) => {
+      const rgb = parseHexRgb(hex);
+      if (!rgb) return null;
+      const normalized = hex.toUpperCase();
+      return { key: normalized, hex: normalized, rgb };
+    })
+    .filter((color): color is PaletteColor => color !== null);
+}
 
 // 获取所有可用的hex值
 export function getAllHexValues(): string[] {
@@ -49,7 +101,11 @@ export function convertPaletteToColorSystem(
   colorSystem: ColorSystem
 ): PaletteColor[] {
   return palette.map(color => {
-    const colorMapping = typedColorSystemMapping[color.hex];
+    if (colorSystem === 'MARD221') {
+      const code = lookupMard221Code(color.hex);
+      return code ? { ...color, key: code } : color;
+    }
+    const colorMapping = typedColorSystemMapping[color.hex.toUpperCase()];
     if (colorMapping && colorMapping[colorSystem]) {
       return {
         ...color,
@@ -70,6 +126,10 @@ export function getDisplayColorKey(hexValue: string, colorSystem: ColorSystem): 
   // 标准化hex值（确保大写）
   const normalizedHex = hexValue.toUpperCase();
   
+  if (colorSystem === 'MARD221') {
+    return lookupMard221Code(normalizedHex) || '?';
+  }
+
   // 通过hex值从colorSystemMapping获取目标色号系统的值
   const colorMapping = typedColorSystemMapping[normalizedHex];
   if (colorMapping && colorMapping[colorSystem]) {
@@ -86,6 +146,10 @@ export function convertColorKeyToHex(displayKey: string, colorSystem: ColorSyste
     return displayKey.toUpperCase();
   }
   
+  if (colorSystem === 'MARD221') {
+    return mard221CodeToHex.get(displayKey) || displayKey;
+  }
+
   // 在colorSystemMapping中查找对应的hex值
   for (const [hex, mapping] of Object.entries(typedColorSystemMapping)) {
     if (mapping[colorSystem] === displayKey) {
@@ -98,6 +162,9 @@ export function convertColorKeyToHex(displayKey: string, colorSystem: ColorSyste
 
 // 验证颜色在指定系统中是否有效
 export function isValidColorInSystem(hexValue: string, colorSystem: ColorSystem): boolean {
+  if (colorSystem === 'MARD221') {
+    return mard221HexToCode.has(hexValue.toUpperCase());
+  }
   const mapping = typedColorSystemMapping[hexValue];
   return mapping && mapping[colorSystem] !== undefined;
 }
@@ -107,6 +174,10 @@ export function getColorKeyByHex(hexValue: string, colorSystem: ColorSystem): st
   // 标准化hex值（确保大写）
   const normalizedHex = hexValue.toUpperCase();
   
+  if (colorSystem === 'MARD221') {
+    return lookupMard221Code(normalizedHex) || '?';
+  }
+
   // 查找映射
   const mapping = typedColorSystemMapping[normalizedHex];
   if (mapping && mapping[colorSystem]) {

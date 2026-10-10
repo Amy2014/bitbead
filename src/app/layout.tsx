@@ -14,13 +14,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "七卡瓦拼豆底稿生成器 | Perler Beads Generator",
+  title: "对色局 · 拼豆底稿",
   description: "上传图片，调整精细度，一键生成像素画图纸，简单实用的像素画生成工具",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "拼豆生成器",
+    title: "对色局",
   },
   icons: {
     icon: [
