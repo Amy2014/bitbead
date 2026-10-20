@@ -16,7 +16,8 @@ import {
   findClosestPaletteColor,
   collapseAdjacentSimilarPixels,
   INTRA_CELL_SIMILARITY,
-  AA_PREPROCESS_VERSION
+  AA_PREPROCESS_VERSION,
+  removeEdgeConnectedBackground
 } from '../utils/pixelation';
 
 // 导入新的类型和组件
@@ -90,17 +91,17 @@ function BeadValueSlider({
 }) {
   const display = Number.isInteger(step) ? String(value) : value.toFixed(step < 1 ? 1 : 0);
   return (
-    <div className="sm:col-span-2">
-      <div className="mb-1.5 flex items-baseline justify-between gap-3">
-        <span className="text-xs font-medium text-gray-700 sm:text-sm dark:text-gray-300">{label}</span>
+    <div>
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{label}</span>
         <span className="tabular-nums text-sm font-semibold text-gray-900 dark:text-gray-100">{display}</span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         <button
           type="button"
           aria-label={`减少${label}`}
           onClick={() => onChange(clampNumber(Number((value - step).toFixed(4)), min, max))}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-lg leading-none text-gray-600 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-base leading-none text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
         >
           −
         </button>
@@ -117,7 +118,7 @@ function BeadValueSlider({
           type="button"
           aria-label={`增加${label}`}
           onClick={() => onChange(clampNumber(Number((value + step).toFixed(4)), min, max))}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-lg leading-none text-gray-600 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-base leading-none text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
         >
           +
         </button>
@@ -155,10 +156,21 @@ import GridTooltip from '../components/GridTooltip';
 import CustomPaletteEditor from '../components/CustomPaletteEditor';
 import FloatingColorPalette from '../components/FloatingColorPalette';
 import FloatingToolbar from '../components/FloatingToolbar';
+import { EditBrushStrip, EditColorInventory, PatternColor } from '../components/EditColorWorkbench';
 import MagnifierTool from '../components/MagnifierTool';
 import MagnifierSelectionOverlay from '../components/MagnifierSelectionOverlay';
 import { loadPaletteSelections, savePaletteSelections, presetToSelections, PaletteSelections } from '../utils/localStorageUtils';
-import { TRANSPARENT_KEY, transparentColorData } from '../utils/pixelEditingUtils';
+import {
+  TRANSPARENT_KEY,
+  transparentColorData,
+  GridRect,
+  collectSelectionColorStats,
+  applySelectionClear,
+  applySelectionFill,
+  applySelectionReplace,
+  recalculateColorStats,
+} from '../utils/pixelEditingUtils';
+import SelectionContextMenu from '../components/SelectionContextMenu';
 
 // 1. 导入新的 DonationModal 组件
 import DonationModal from '../components/DonationModal';
@@ -166,6 +178,7 @@ import FocusModePreDownloadModal from '../components/FocusModePreDownloadModal';
 
 export default function Home() {
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
+  const [originalPreviewSrc, setOriginalPreviewSrc] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<number>(50);
   const [similarityThreshold, setSimilarityThreshold] = useState<number>(0);
   const [maxColorCount, setMaxColorCount] = useState<number>(20);
@@ -175,10 +188,10 @@ export default function Home() {
   const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Dominant); // 默认为卡通模式
   
   // 新增：色号系统选择状态
-  const [selectedColorSystem, setSelectedColorSystem] = useState<ColorSystem>('MARD');
+  const [selectedColorSystem, setSelectedColorSystem] = useState<ColorSystem>('MARD221');
   
   const [activeBeadPalette, setActiveBeadPalette] = useState<PaletteColor[]>(() => {
-      return fullBeadPalette; // 默认使用全部颜色
+      return mard221BeadPalette;
   });
   // 状态变量：存储被排除的颜色（hex值）
   const [excludedColorKeys, setExcludedColorKeys] = useState<Set<string>>(new Set());
@@ -218,6 +231,9 @@ export default function Home() {
 
   // 新增：高亮相关状态
   const [highlightColorKey, setHighlightColorKey] = useState<string | null>(null);
+  const [isolateLockedHex, setIsolateLockedHex] = useState<string | null>(null);
+  const [isolateHoverHex, setIsolateHoverHex] = useState<string | null>(null);
+  const isolateColorKey = isolateLockedHex ?? isolateHoverHex;
 
   // 新增：完整色板切换状态
   const [showFullPalette, setShowFullPalette] = useState<boolean>(false);
@@ -231,6 +247,14 @@ export default function Home() {
     isActive: false,
     step: 'select-source'
   });
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [isPickingBoardColor, setIsPickingBoardColor] = useState(false);
+  const [boardBackgroundHex, setBoardBackgroundHex] = useState<string | null>(null);
+  const [marqueeRect, setMarqueeRect] = useState<GridRect | null>(null);
+  const [selectionMenuPos, setSelectionMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [selectionPending, setSelectionPending] = useState<
+    null | { kind: 'replace'; source: { key: string; color: string } }
+  >(null);
 
   // 新增：组件挂载状态
   const [isMounted, setIsMounted] = useState<boolean>(false);
@@ -315,6 +339,22 @@ export default function Home() {
     showToast('已撤回上一步');
   }, [editHistory, showToast]);
 
+  const handleMirrorPattern = useCallback((axis: 'horizontal' | 'vertical') => {
+    if (!mappedPixelData) return;
+    saveEditSnapshot();
+    if (axis === 'horizontal') {
+      setMappedPixelData(
+        mappedPixelData.map((row) => [...row].reverse().map((cell) => ({ ...cell })))
+      );
+      showToast('已左右镜像');
+    } else {
+      setMappedPixelData(
+        [...mappedPixelData].reverse().map((row) => row.map((cell) => ({ ...cell })))
+      );
+      showToast('已上下镜像');
+    }
+  }, [mappedPixelData, saveEditSnapshot, showToast]);
+
   // 一键去背景单步撤回
   const handleUndoBgRemoval = useCallback(() => {
     if (!bgRemovalSnapshot) return;
@@ -331,11 +371,18 @@ export default function Home() {
   }, []);
 
   // 放大镜像素编辑处理函数
+  const cellMatchesIsolate = (cell: MappedPixel | undefined) => {
+    if (!isolateLockedHex) return true;
+    if (!cell || cell.isExternal || cell.key === TRANSPARENT_KEY) return false;
+    return (cell.color || '').toUpperCase() === isolateLockedHex;
+  };
+
   const handleMagnifierPixelEdit = (row: number, col: number, colorData: { key: string; color: string }) => {
     if (!mappedPixelData) return;
 
     const oldPixel = mappedPixelData[row][col];
     if (!oldPixel || oldPixel.key === colorData.key) return;
+    if (!cellMatchesIsolate(oldPixel)) return;
 
     // 创建新的像素数据
     const newMappedPixelData = mappedPixelData.map((rowData, r) =>
@@ -395,7 +442,9 @@ export default function Home() {
     original: ImageData;
     collapsed: ImageData;
   } | null>(null);
+  const csvImportLockRef = useRef<{ src: string; n: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const originalPreviewInputRef = useRef<HTMLInputElement>(null);
   // ++ 添加: Ref for import file input ++
   const importPaletteInputRef = useRef<HTMLInputElement>(null);
   //const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -452,6 +501,19 @@ export default function Home() {
     // 使用色相排序而不是色号排序
     return sortColorsByHue(colorData);
   }, [mappedPixelData, selectedColorSystem]);
+
+  const patternColors: PatternColor[] = useMemo(() => {
+    if (!colorCounts) return [];
+    return Object.entries(colorCounts)
+      .filter(([, data]) => data.count > 0)
+      .map(([hex, data]) => ({
+        hex: hex.toUpperCase(),
+        color: data.color,
+        key: hex.toUpperCase(),
+        count: data.count,
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [colorCounts]);
 
   // 初始化时从本地存储加载自定义色板选择
   useEffect(() => {
@@ -671,22 +733,43 @@ export default function Home() {
     // 绘制每个像素
     pixelData.forEach((row, rowIndex) => {
       row.forEach((cell, colIndex) => {
-        if (cell) {
-          // 使用颜色，外部单元格用白色
-          const color = cell.isExternal ? '#FFFFFF' : cell.color;
-          ctx.fillStyle = color;
-          ctx.fillRect(
-            colIndex * pixelSize, 
-            rowIndex * pixelSize, 
-            pixelSize, 
-            pixelSize
-          );
-        }
+        if (!cell || cell.isExternal || cell.key === TRANSPARENT_KEY) return;
+        ctx.fillStyle = cell.color;
+        ctx.fillRect(
+          colIndex * pixelSize,
+          rowIndex * pixelSize,
+          pixelSize,
+          pixelSize
+        );
       });
     });
     
     // 转换为dataURL
     return canvas.toDataURL('image/png');
+  };
+
+  const sizeImportedBeadCanvases = (N: number, M: number) => {
+    const aspectRatio = M / Math.max(N, 1);
+    const baseWidth = 500;
+    const minCellSize = 4;
+    const recommendedCellSize = 6;
+    let outputWidth = baseWidth;
+    if (N > 100) {
+      const maxWidth = Math.min(1200, window.innerWidth * 0.9);
+      outputWidth = Math.min(
+        maxWidth,
+        Math.max(baseWidth, N * recommendedCellSize, N * minCellSize)
+      );
+    }
+    const outputHeight = Math.max(1, Math.round(outputWidth * aspectRatio));
+    if (pixelatedCanvasRef.current) {
+      pixelatedCanvasRef.current.width = outputWidth;
+      pixelatedCanvasRef.current.height = outputHeight;
+    }
+    if (effectCanvasRef.current) {
+      effectCanvasRef.current.width = outputWidth;
+      effectCanvasRef.current.height = outputHeight;
+    }
   };
 
   const processFile = (file: File) => {
@@ -703,7 +786,8 @@ export default function Home() {
           // 设置导入的数据
           setMappedPixelData(mappedPixelData);
           setGridDimensions(gridDimensions);
-          setOriginalImageSrc(null); // CSV导入时没有原始图片
+          setOriginalImageSrc(null);
+          setOriginalPreviewSrc(null);
           
           // 计算颜色统计
           const colorCountsMap: { [key: string]: { count: number; color: string } } = {};
@@ -730,10 +814,12 @@ export default function Home() {
           setTotalBeadCount(totalCount);
           setInitialGridColorKeys(new Set(Object.keys(colorCountsMap)));
           
-          // 根据mappedPixelData生成合成的originalImageSrc
+          // 根据mappedPixelData生成合成的originalImageSrc（透明格保持透明，避免再映射成白豆）
           const syntheticImageSrc = generateSyntheticImageFromPixelData(mappedPixelData, gridDimensions);
-          
+          csvImportLockRef.current = { src: syntheticImageSrc, n: gridDimensions.N };
+          sizeImportedBeadCanvases(gridDimensions.N, gridDimensions.M);
           setOriginalImageSrc(syntheticImageSrc);
+          setOriginalPreviewSrc(syntheticImageSrc);
           
           // 重置状态
           setIsManualColoringMode(false);
@@ -742,7 +828,6 @@ export default function Home() {
           
           // 设置格子数量为导入的尺寸，避免重新映射时尺寸被修改
           setGranularity(gridDimensions.N);
-          setGranularityInput(gridDimensions.N.toString());
           
           alert(`成功导入CSV文件！图纸尺寸：${gridDimensions.N}x${gridDimensions.M}，共使用${Object.keys(colorCountsMap).length}种颜色。`);
         })
@@ -753,7 +838,9 @@ export default function Home() {
     } else {
       // 处理图片文件
       const applyImageSrc = (result: string) => {
+        csvImportLockRef.current = null;
         setOriginalImageSrc(result);
+        setOriginalPreviewSrc(result);
         setMappedPixelData(null);
         setGridDimensions(null);
         setColorCounts(null);
@@ -762,7 +849,6 @@ export default function Home() {
         // ++ 重置横轴格子数量为默认值 ++
         const defaultGranularity = 100;
         setGranularity(defaultGranularity);
-        setGranularityInput(defaultGranularity.toString());
         setRemapTrigger(prev => prev + 1); // Trigger full remap for new image
       };
 
@@ -802,7 +888,29 @@ export default function Home() {
       setIsManualColoringMode(false);
       setSelectedColor(null);
       setIsEraseMode(false);
+      setIsPickingBoardColor(false);
+      setBoardBackgroundHex(null);
     }
+  };
+
+  const handleReplaceOriginalPreview = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('请选择图片文件（JPG / PNG / GIF）。');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setOriginalPreviewSrc(reader.result);
+      }
+    };
+    reader.onerror = () => {
+      alert('无法读取图片。');
+    };
+    reader.readAsDataURL(file);
   };
 
   // 处理一键擦除模式切换
@@ -825,6 +933,11 @@ export default function Home() {
     // 如果开启擦除模式，取消选中的颜色
     if (!isEraseMode) {
       setSelectedColor(null);
+      setIsSelectMode(false);
+      setMarqueeRect(null);
+      setSelectionMenuPos(null);
+      setSelectionPending(null);
+      setIsPickingBoardColor(false);
     }
   };
 
@@ -971,7 +1084,7 @@ export default function Home() {
           row.map(cell => ({ ...cell, isExternal: cell.isExternal ?? false }))
       );
       
-      // 5. 处理相似颜色合并（感知色差模式已在网格内完成收色+抖动，不再二次合并）
+      // 5. 处理相似颜色合并（感知色差模式已在网格内完成收色，不再二次合并）
       const similarityThresholdValue = threshold;
       
       // 已被合并（替换）的颜色集合
@@ -1079,6 +1192,7 @@ export default function Home() {
         console.error("Image loading failed:", error);
         alert("无法加载图片。");
         setOriginalImageSrc(null);
+        setOriginalPreviewSrc(null);
         setMappedPixelData(null);
         setGridDimensions(null);
         setColorCounts(null);
@@ -1119,6 +1233,11 @@ export default function Home() {
   useEffect(() => {
     if (originalImageSrc && activeBeadPalette.length > 0) {
        const timeoutId = setTimeout(() => {
+         const csvLock = csvImportLockRef.current;
+         if (csvLock && csvLock.src === originalImageSrc && csvLock.n === granularity) {
+           return;
+         }
+         csvImportLockRef.current = null;
          if (originalImageSrc && originalCanvasRef.current && collapsedCanvasRef.current && pixelatedCanvasRef.current && activeBeadPalette.length > 0) {
            console.log("useEffect triggered: Processing image due to src, granularity, threshold, palette selection, mode or remap trigger.");
            pixelateImage(originalImageSrc, granularity, similarityThreshold, activeBeadPalette, pixelationMode, maxColorCount, centerColorMinSharePercent, useCenterColorShare);
@@ -1461,6 +1580,12 @@ export default function Home() {
       return;
     }
 
+    const { data: newPixelData, removed } = removeEdgeConnectedBackground(mappedPixelData);
+    if (removed === 0) {
+      alert('边缘没有可识别的背景颜色。');
+      return;
+    }
+
     // 保存快照用于单步撤回
     setBgRemovalSnapshot({
       mappedPixelData: mappedPixelData.map(row => row.map(cell => ({ ...cell }))),
@@ -1469,75 +1594,6 @@ export default function Home() {
     });
     // 去背景会大幅改变数据，清空编辑撤回历史
     setEditHistory([]);
-
-    const { N, M } = gridDimensions;
-    const borderCounts = new Map<string, number>();
-
-    const countBorderCell = (row: number, col: number) => {
-      const cell = mappedPixelData[row]?.[col];
-      if (!cell || cell.isExternal || cell.key === TRANSPARENT_KEY) return;
-      borderCounts.set(cell.key, (borderCounts.get(cell.key) || 0) + 1);
-    };
-
-    for (let col = 0; col < N; col++) {
-      countBorderCell(0, col);
-      if (M > 1) countBorderCell(M - 1, col);
-    }
-    for (let row = 1; row < M - 1; row++) {
-      countBorderCell(row, 0);
-      if (N > 1) countBorderCell(row, N - 1);
-    }
-
-    if (borderCounts.size === 0) {
-      alert('边缘没有可识别的背景颜色。');
-      return;
-    }
-
-    let targetKey = '';
-    let maxCount = -1;
-    borderCounts.forEach((count, key) => {
-      if (count > maxCount) {
-        maxCount = count;
-        targetKey = key;
-      }
-    });
-
-    const newPixelData = mappedPixelData.map(row => row.map(cell => ({ ...cell })));
-    const visited = Array(M).fill(null).map(() => Array(N).fill(false));
-    const stack: { row: number; col: number }[] = [];
-
-    const pushIfTarget = (row: number, col: number) => {
-      if (row < 0 || row >= M || col < 0 || col >= N || visited[row][col]) {
-        return;
-      }
-      const cell = newPixelData[row][col];
-      if (!cell || cell.isExternal || cell.key !== targetKey) return;
-      visited[row][col] = true;
-      stack.push({ row, col });
-    };
-
-    for (let col = 0; col < N; col++) {
-      pushIfTarget(0, col);
-      if (M > 1) pushIfTarget(M - 1, col);
-    }
-    for (let row = 1; row < M - 1; row++) {
-      pushIfTarget(row, 0);
-      if (N > 1) pushIfTarget(row, N - 1);
-    }
-
-    if (stack.length === 0) {
-      alert('未找到可去除的背景区域。');
-      return;
-    }
-
-    while (stack.length > 0) {
-      const { row, col } = stack.pop()!;
-      newPixelData[row][col] = { ...transparentColorData };
-      pushIfTarget(row - 1, col);
-      pushIfTarget(row + 1, col);
-      pushIfTarget(row, col - 1);
-      pushIfTarget(row, col + 1);
-    }
 
     setMappedPixelData(newPixelData);
 
@@ -1569,6 +1625,7 @@ export default function Home() {
   // 洪水填充擦除函数
   const floodFillErase = (startRow: number, startCol: number, targetKey: string) => {
     if (!mappedPixelData || !gridDimensions) return;
+    if (!cellMatchesIsolate(mappedPixelData[startRow]?.[startCol])) return;
 
     const { N, M } = gridDimensions;
     const newPixelData = mappedPixelData.map(row => row.map(cell => ({ ...cell })));
@@ -1696,6 +1753,10 @@ export default function Home() {
         return;
       }
 
+      if (isClick && isSelectMode) {
+        return;
+      }
+
       // Manual Coloring Logic - 保持原有的上色逻辑
       if (isClick && isManualColoringMode && selectedColor) {
         // 手动上色模式逻辑保持不变
@@ -1704,6 +1765,7 @@ export default function Home() {
         const currentCell = newPixelData[j]?.[i];
 
         if (!currentCell) return;
+        if (!cellMatchesIsolate(currentCell)) return;
 
         const previousKey = currentCell.key;
         const wasExternal = currentCell.isExternal;
@@ -1758,11 +1820,9 @@ export default function Home() {
           }
         }
         
-        // 上色操作后隐藏提示
-        setTooltipData(null);
       }
-      // Tooltip Logic (非手动上色模式点击或悬停)
-      else if (!isManualColoringMode) {
+      // Tooltip：编辑模式悬停也显示色号；非编辑模式保持点击切换
+      if (!isClick || !isManualColoringMode) {
         // 只有单元格实际有内容（非背景/外部区域）才会显示提示
         if (cellData && !cellData.isExternal && cellData.key) {
           // 检查是否已经显示了提示框，并且是否点击的是同一个位置
@@ -1783,9 +1843,9 @@ export default function Home() {
             const prevCellI = Math.floor(prevCanvasX / cellWidthOutput);
             const prevCellJ = Math.floor(prevCanvasY / cellHeightOutput);
             
-            // 如果点击的是同一个格子，则切换tooltip的显示/隐藏状态
-            if (i === prevCellI && j === prevCellJ) {
-              setTooltipData(null); // 隐藏提示
+            // 非编辑模式点击同一格才切换隐藏；编辑模式悬停持续显示
+            if (isClick && i === prevCellI && j === prevCellJ) {
+              setTooltipData(null);
               return;
             }
           }
@@ -1970,8 +2030,118 @@ export default function Home() {
     setShowFullPalette(!showFullPalette);
   };
 
+  const commitMappedPixelData = (next: MappedPixel[][]) => {
+    saveEditSnapshot();
+    setMappedPixelData(next);
+    const stats = recalculateColorStats(next);
+    setColorCounts(stats.colorCounts);
+    setTotalBeadCount(stats.totalCount);
+  };
+
+  const handlePickBoardColorToggle = () => {
+    if (isPickingBoardColor) {
+      setIsPickingBoardColor(false);
+      return;
+    }
+    setIsEraseMode(false);
+    setColorReplaceState({ isActive: false, step: 'select-source' });
+    setSelectedColor(null);
+    setIsSelectMode(false);
+    setMarqueeRect(null);
+    setSelectionMenuPos(null);
+    setSelectionPending(null);
+    setIsPickingBoardColor(true);
+  };
+
+  const handleSelectModeToggle = () => {
+    if (isSelectMode) {
+      setIsSelectMode(false);
+      setMarqueeRect(null);
+      setSelectionMenuPos(null);
+      setSelectionPending(null);
+      return;
+    }
+    setIsEraseMode(false);
+    setColorReplaceState({ isActive: false, step: 'select-source' });
+    setSelectedColor(null);
+    setHighlightColorKey(null);
+    setIsPickingBoardColor(false);
+    setIsSelectMode(true);
+    setMarqueeRect(null);
+    setSelectionMenuPos(null);
+    setSelectionPending(null);
+  };
+
+  const handleMarqueeComplete = (rect: GridRect, clientX: number, clientY: number) => {
+    setMarqueeRect(rect);
+    setSelectionPending(null);
+    setSelectionMenuPos({ x: clientX, y: clientY });
+  };
+
+  const handleSelectionContextMenu = (clientX: number, clientY: number) => {
+    if (!marqueeRect) return;
+    setSelectionMenuPos({ x: clientX, y: clientY });
+  };
+
+  const handleSelectionClear = () => {
+    if (!mappedPixelData || !marqueeRect) return;
+    const { next, changed } = applySelectionClear(mappedPixelData, marqueeRect);
+    if (changed) commitMappedPixelData(next);
+    setSelectionMenuPos(null);
+    setSelectionPending(null);
+  };
+
+  const handleSelectionFillWait = () => {
+    if (!mappedPixelData || !marqueeRect) return;
+    if (!selectedColor || selectedColor.key === TRANSPARENT_KEY) {
+      showToast('请先选择画笔颜色');
+      return;
+    }
+    const { next, changed } = applySelectionFill(mappedPixelData, marqueeRect, selectedColor);
+    if (changed) commitMappedPixelData(next);
+    setSelectionMenuPos(null);
+    setSelectionPending(null);
+  };
+
+  const handleSelectionReplaceSource = (source: { key: string; color: string }) => {
+    setSelectionPending({ kind: 'replace', source });
+    setHighlightColorKey(source.color);
+    setSelectionMenuPos(null);
+  };
+
+  const applySelectionColor = (colorData: { key: string; color: string }) => {
+    if (!mappedPixelData || !marqueeRect || !selectionPending) return false;
+    if (colorData.key === TRANSPARENT_KEY) return false;
+    if (selectionPending.kind !== 'replace') return false;
+    const { next, changed } = applySelectionReplace(
+      mappedPixelData,
+      marqueeRect,
+      selectionPending.source,
+      colorData
+    );
+    if (changed) commitMappedPixelData(next);
+    setHighlightColorKey(null);
+    setSelectionPending(null);
+    return true;
+  };
+
+  const selectionColorStats = useMemo(() => {
+    if (!mappedPixelData || !marqueeRect) return [];
+    return collectSelectionColorStats(mappedPixelData, marqueeRect);
+  }, [mappedPixelData, marqueeRect]);
+
+  const selectionHint =
+    selectionPending?.kind === 'replace'
+      ? '在色区2或色区3选择替换成的颜色'
+      : marqueeRect
+        ? '右键选区打开菜单：清空 / 填充 / 替换'
+        : null;
+
   // 新增：处理颜色选择，同时管理模式切换
   const handleColorSelect = (colorData: { key: string; color: string; isExternal?: boolean }) => {
+    if (isSelectMode && selectionPending && applySelectionColor(colorData)) {
+      return;
+    }
     // 如果选择的是橡皮擦（透明色）且当前在颜色替换模式，退出替换模式
     if (colorData.key === TRANSPARENT_KEY && colorReplaceState.isActive) {
       setColorReplaceState({
@@ -2004,6 +2174,11 @@ export default function Home() {
         // 只退出冲突的模式，但保持在手动上色模式下
         setIsEraseMode(false);
         setSelectedColor(null);
+        setIsSelectMode(false);
+        setMarqueeRect(null);
+        setSelectionMenuPos(null);
+        setSelectionPending(null);
+        setIsPickingBoardColor(false);
         return {
           isActive: true,
           step: 'select-source'
@@ -2164,9 +2339,9 @@ export default function Home() {
       }}
     />
 
-    <div className="min-h-screen flex flex-col items-center bg-gradient-to-b from-gray-50 to-white dark:from-gray-800 dark:to-gray-900 font-[family-name:var(--font-geist-sans)] overflow-x-hidden pb-14">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-gradient-to-b from-gray-50 to-white pb-14 dark:from-gray-800 dark:to-gray-900 font-[family-name:var(--font-geist-sans)]">
       <header className="sticky top-0 z-30 w-full border-b border-[#3a332c]/25 bg-[#1c1815] text-[#efe8dc]">
-        <div className="relative z-10 mx-auto flex h-14 w-full max-w-4xl items-center justify-between px-4 sm:px-6">
+        <div className="relative z-10 mx-auto flex h-14 w-full max-w-[1920px] items-center justify-between px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="grid shrink-0 grid-cols-2 gap-0.5 rounded-md bg-white/10 p-1" aria-hidden="true">
               <span className="h-2 w-2 rounded-full bg-[#e07a5f]"></span>
@@ -2188,47 +2363,54 @@ export default function Home() {
       </header>
 
       {/* Apply dark mode styles to the main section */}
-      <main ref={mainRef} className="w-[80%] max-w-none mx-auto px-4 sm:px-6 mt-6 flex flex-col items-center space-y-5 sm:space-y-6 relative overflow-hidden">
-        {/* Apply dark mode styles to the Drop Zone */}
-        <div
-          onDrop={handleDrop} onDragOver={handleDragOver} onDragEnter={handleDragOver}
-          onClick={isMounted ? triggerFileInput : undefined}
-          className={`${isManualColoringMode ? 'hidden' : ''} border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 sm:p-8 text-center ${isMounted ? 'cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-gray-800' : 'cursor-wait'} transition-all duration-300 w-full md:max-w-md flex flex-col justify-center items-center shadow-sm hover:shadow-md`}
-          style={{ minHeight: '130px' }}
-        >
-          {/* Icon color */}
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 sm:h-12 sm:w-12 text-gray-400 dark:text-gray-500 mb-2 sm:mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-             <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-          </svg>
-          {/* Text color */}
-          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">拖放图片到此处，或<span className="font-medium text-blue-600 dark:text-blue-400">点击选择文件</span></p>
-          {/* Text color */}
-                          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">支持 JPG, PNG, GIF 图片格式，或 CSV 数据文件</p>
-        </div>
+      <main ref={mainRef} className="relative mx-auto mt-3 flex min-h-0 w-full max-w-[1920px] flex-1 flex-col px-3 sm:px-4">
+        <input type="file" accept="image/jpeg, image/png, image/gif, .csv, text/csv, application/csv, text/plain" onChange={handleFileChange} ref={fileInputRef} className="hidden" />
+        <input
+          type="file"
+          accept="image/jpeg, image/png, image/gif, image/webp"
+          onChange={handleReplaceOriginalPreview}
+          ref={originalPreviewInputRef}
+          className="hidden"
+        />
 
-        {/* Apply dark mode styles to the Tip Box */}
         {!originalImageSrc && (
-          <div className="w-full md:max-w-md bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-gray-800 dark:to-gray-700 p-3 rounded-lg border border-blue-100 dark:border-gray-600 shadow-sm">
-            {/* Icon color */}
-            <p className="text-xs text-indigo-700 dark:text-indigo-300 flex items-start">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1.5 flex-shrink-0 text-blue-500 dark:text-blue-400 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          <div className="mx-auto flex max-w-md flex-col items-center space-y-4">
+            <div
+              onDrop={handleDrop} onDragOver={handleDragOver} onDragEnter={handleDragOver}
+              onClick={isMounted ? triggerFileInput : undefined}
+              className={`flex w-full flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 p-8 text-center shadow-sm dark:border-gray-600 ${isMounted ? 'cursor-pointer hover:border-blue-400 hover:bg-blue-50 dark:hover:border-blue-500 dark:hover:bg-gray-800' : 'cursor-wait'}`}
+              style={{ minHeight: '150px' }}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="mb-3 h-12 w-12 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-              {/* Text color */}
-              <span className="text-indigo-700 dark:text-indigo-300">小贴士：使用像素图进行转换前，请确保图片的边缘吻合像素格子的边界线，这样可以获得更精确的切割效果和更好的成品。</span>
-            </p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">拖放图片到此处，或<span className="font-medium text-blue-600 dark:text-blue-400">点击选择文件</span></p>
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">支持 JPG, PNG, GIF，或 CSV</p>
+            </div>
+            <div className="w-full rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50 to-indigo-50 p-3 shadow-sm dark:border-gray-600 dark:from-gray-800 dark:to-gray-700">
+              <p className="flex items-start text-xs text-indigo-700 dark:text-indigo-300">
+                <svg xmlns="http://www.w3.org/2000/svg" className="mr-1.5 mt-0.5 h-4 w-4 flex-shrink-0 text-blue-500 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>小贴士：像素图转换前请让边缘对齐格子线，切割会更准。</span>
+              </p>
+            </div>
           </div>
         )}
 
-                      <input type="file" accept="image/jpeg, image/png, image/gif, .csv, text/csv, application/csv, text/plain" onChange={handleFileChange} ref={fileInputRef} className="hidden" />
-
-        {/* Controls and Output Area */}
         {originalImageSrc && (
-          <div className="w-full flex flex-col items-center space-y-5 sm:space-y-6">
-            {/* ++ HIDE Control Row in manual mode ++ */}
+          <div className="grid min-h-0 flex-1 grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(248px,292px)_minmax(0,1fr)_minmax(260px,300px)] lg:items-stretch">
+            <aside className="space-y-2 lg:h-full lg:overflow-y-auto">
+            <div
+              onDrop={handleDrop} onDragOver={handleDragOver} onDragEnter={handleDragOver}
+              onClick={isMounted ? triggerFileInput : undefined}
+              className={`flex w-full flex-col items-center justify-center rounded-md border border-dashed border-gray-300 bg-white px-2 py-2 text-center dark:border-gray-600 dark:bg-gray-800 ${isMounted ? 'cursor-pointer hover:border-blue-400 dark:hover:border-blue-500' : 'cursor-wait'}`}
+            >
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-200">换图 / 导入 CSV</p>
+              <p className="text-[11px] text-gray-400">点击或拖放替换</p>
+            </div>
             {!isManualColoringMode && (
-              /* 修改控制面板网格布局 */
-              <div className="w-full md:max-w-2xl grid grid-cols-1 sm:grid-cols-2 gap-4 bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-md border border-gray-100 dark:border-gray-700">
+              <div className="grid w-full grid-cols-1 gap-3 rounded-lg border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-800">
                 <BeadValueSlider
                   label="横轴切割数量"
                   value={granularity}
@@ -2255,35 +2437,35 @@ export default function Home() {
                 />
 
                 {/* 快捷按钮 */}
-                <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     onClick={handleAutoRemoveBackground}
                     disabled={!mappedPixelData || !gridDimensions}
-                    className="inline-flex items-center justify-center h-9 px-3 text-sm rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-800/40 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200 dark:hover:bg-blue-800/40"
                   >
                     一键去背景
                   </button>
                   <button
                     onClick={handleUndoBgRemoval}
                     disabled={!bgRemovalSnapshot}
-                    className="inline-flex items-center justify-center h-9 px-3 text-sm rounded-md border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-gray-200 bg-gray-50 px-2.5 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
                   >
                     回撤上一步
                   </button>
-                  <span className="ml-auto h-9 inline-flex items-center text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                  <span className="ml-auto inline-flex h-8 items-center whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
                     {gridDimensions
-                      ? `尺寸 ${gridDimensions.N} × ${gridDimensions.M} 格`
+                      ? `${gridDimensions.N} × ${gridDimensions.M} 格`
                       : '尺寸 —'}
                   </span>
                 </div>
 
                 {pixelationMode !== PixelationMode.Average && (
-                <div className="sm:col-span-2 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-medium text-gray-700 sm:text-sm dark:text-gray-300">中心色判定</p>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">
-                        关闭时每格只用主色；开启后按占比决定用中心色还是主色。
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-gray-700 dark:text-gray-300">中心色判定</p>
+                      <p className="text-[11px] leading-snug text-gray-400 dark:text-gray-500">
+                        关=主色；开=按占比用中心色或主色
                       </p>
                     </div>
                     <button
@@ -2291,10 +2473,10 @@ export default function Home() {
                       role="switch"
                       aria-checked={useCenterColorShare}
                       onClick={() => setUseCenterColorShare((prev) => !prev)}
-                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${useCenterColorShare ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${useCenterColorShare ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                     >
                       <span
-                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-[left] ${useCenterColorShare ? 'left-5' : 'left-0.5'}`}
+                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-[left] ${useCenterColorShare ? 'left-[18px]' : 'left-0.5'}`}
                       />
                     </button>
                   </div>
@@ -2313,36 +2495,34 @@ export default function Home() {
                 )}
 
                 {/* Pixelation Mode Selector */}
-                <div className="sm:col-span-2">
-                  {/* Label color */}
-                  <label htmlFor="pixelationModeSelect" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">处理模式:</label>
+                <div>
+                  <label htmlFor="pixelationModeSelect" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">处理模式</label>
                   <div className="flex items-center gap-2">
-                    {/* Select field styles */}
                     <select
                       id="pixelationModeSelect"
                       value={pixelationMode}
                       onChange={handlePixelationModeChange}
-                      className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
+                      className="h-8 w-full rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
                     >
                       <option value={PixelationMode.Dominant} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">卡通 (主色)</option>
                       <option value={PixelationMode.Average} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">真实 (平均)</option>
-                      <option value={PixelationMode.Perceptual} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">感知色差 (CIEDE2000)</option>
+                      <option value={PixelationMode.Perceptual} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">感知色差 (image-q)</option>
                     </select>
                   </div>
                 </div>
 
                 {/* 色号系统选择器 */}
-                <div className="sm:col-span-2">
-                  <label className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">色号系统:</label>
-                  <div className="flex flex-wrap gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">色号系统</label>
+                  <div className="flex flex-wrap gap-1.5">
                     {colorSystemOptions.map(option => (
                       <button
                         key={option.key}
                         onClick={() => setSelectedColorSystem(option.key as ColorSystem)}
-                        className={`px-3 py-2 text-sm rounded-lg border transition-all duration-200 flex-shrink-0 ${
+                        className={`shrink-0 rounded-md border px-2.5 py-1 text-xs transition-colors ${
                           selectedColorSystem === option.key
-                            ? 'bg-blue-500 text-white border-blue-500 shadow-md transform scale-105'
-                            : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-gray-600'
+                            ? 'border-blue-500 bg-blue-500 text-white'
+                            : 'border-gray-300 bg-white text-gray-700 hover:border-blue-400 hover:bg-blue-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
                         }`}
                       >
                         {option.name}
@@ -2351,122 +2531,200 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* 自定义色板按钮 */}
-                <div className="sm:col-span-2 mt-3">
+                <div>
                   <button
                     onClick={() => setIsCustomPaletteEditorOpen(true)}
-                    className="w-full py-2.5 px-3 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-medium rounded-lg shadow-sm transition-all duration-200 hover:shadow-md hover:from-blue-600 hover:to-purple-600"
+                    className="flex w-full items-center justify-center gap-1.5 rounded-md bg-gradient-to-r from-blue-500 to-purple-500 px-2 py-2 text-sm font-medium text-white hover:from-blue-600 hover:to-purple-600"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                       <path fillRule="evenodd" d="M4 2a2 2 0 00-2 2v11a3 3 0 106 0V4a2 2 0 00-2-2H4zm1 14a1 1 0 100-2 1 1 0 000 2zm5-1.757l4.9-4.9a2 2 0 000-2.828L13.485 5.1a2 2 0 00-2.828 0L10 5.757v8.486zM16 18H9.071l6-6H16a2 2 0 012 2v2a2 2 0 01-2 2z" clipRule="evenodd" />
                     </svg>
-                    管理色板 ({Object.values(customPaletteSelections).filter(Boolean).length} 色)
+                    管理色板 ({Object.values(customPaletteSelections).filter(Boolean).length})
                   </button>
                   {isCustomPalette && (
-                    <p className="text-xs text-center text-blue-500 dark:text-blue-400 mt-1.5">当前使用自定义色板</p>
+                    <p className="mt-0.5 text-center text-[10px] text-blue-500 dark:text-blue-400">当前使用自定义色板</p>
                   )}
                 </div>
               </div>
             )}
 
-            {/* 自定义色板编辑器弹窗 - 这是新增的部分 */}
-            {isCustomPaletteEditorOpen && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 flex justify-center items-center p-4">
-                <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-                   {/* 添加隐藏的文件输入框 */}
-                   <input
-                    type="file"
-                    accept=".json"
-                    ref={importPaletteInputRef}
-                    onChange={handleImportPaletteFile}
-                    className="hidden"
-                  />
-                  <div className="p-4 sm:p-6 flex-1 overflow-y-auto"> {/* 让内容区域可滚动 */}
-                    <CustomPaletteEditor
-                      allColors={catalogPalette}
-                      currentSelections={customPaletteSelections}
-                      onSelectionChange={handleSelectionChange}
-                      onSaveCustomPalette={handleSaveCustomPalette}
-                      onClose={() => setIsCustomPaletteEditorOpen(false)}
-                      onExportCustomPalette={handleExportCustomPalette}
-                      onImportCustomPalette={triggerImportPalette}
-                      selectedColorSystem={selectedColorSystem}
-                    />
-                  </div>
-                </div>
+            {isManualColoringMode && mappedPixelData && gridDimensions && (
+              <div className="rounded-lg border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+                <EditBrushStrip
+                  colors={patternColors}
+                  selectedColorSystem={selectedColorSystem}
+                  selectedColor={selectedColor}
+                  onBrushSelect={(colorData) => {
+                    if (isPickingBoardColor) return;
+                    if (isSelectMode && selectionPending && applySelectionColor(colorData)) {
+                      return;
+                    }
+                    if (colorReplaceState.isActive) {
+                      if (colorReplaceState.step === 'select-source') {
+                        handleCanvasColorSelect(colorData);
+                        return;
+                      }
+                      if (colorReplaceState.step === 'select-target' && colorReplaceState.sourceColor) {
+                        handleColorReplace(colorReplaceState.sourceColor, colorData);
+                        return;
+                      }
+                    }
+                    handleColorSelect(colorData);
+                  }}
+                  isEraseMode={isEraseMode}
+                  onEraseToggle={handleEraseToggle}
+                  colorReplaceState={colorReplaceState}
+                  onColorReplaceToggle={handleColorReplaceToggle}
+                  canUndo={editHistory.length > 0}
+                  onUndo={handleUndoEdit}
+                  onPickEraser={() =>
+                    handleColorSelect({ key: TRANSPARENT_KEY, color: '#FFFFFF' })
+                  }
+                  onMirrorHorizontal={() => handleMirrorPattern('horizontal')}
+                  onMirrorVertical={() => handleMirrorPattern('vertical')}
+                  libraryColors={activeBeadPalette}
+                  isSelectMode={isSelectMode}
+                  onSelectModeToggle={handleSelectModeToggle}
+                  selectionHint={selectionHint}
+                  onLibrarySelect={(colorData) => {
+                    if (isPickingBoardColor) {
+                      setBoardBackgroundHex(colorData.color.toUpperCase());
+                      setIsPickingBoardColor(false);
+                      return;
+                    }
+                    if (isSelectMode && selectionPending && applySelectionColor(colorData)) {
+                      return;
+                    }
+                    if (colorReplaceState.isActive) {
+                      if (colorReplaceState.step === 'select-source') {
+                        handleCanvasColorSelect(colorData);
+                        return;
+                      }
+                      if (colorReplaceState.step === 'select-target' && colorReplaceState.sourceColor) {
+                        handleColorReplace(colorReplaceState.sourceColor, colorData);
+                        return;
+                      }
+                    }
+                    handleColorSelect(colorData);
+                  }}
+                  isPickingBoardColor={isPickingBoardColor}
+                  onPickBoardColorToggle={handlePickBoardColorToggle}
+                  boardBackgroundColor={boardBackgroundHex}
+                />
               </div>
             )}
 
-            {/* Output Section */}
-            <div className="w-full">
-              <canvas ref={originalCanvasRef} className="hidden"></canvas>
+            {!isManualColoringMode && mappedPixelData && gridDimensions && (
+              <button
+                onClick={() => {
+                  setIsManualColoringMode(true);
+                  setSelectedColor(null);
+                  setTooltipData(null);
+                  setIsolateLockedHex(null);
+                  setIsolateHoverHex(null);
+                  setIsFloatingPaletteOpen(false);
+                }}
+                className="flex w-full items-center justify-center rounded-md bg-blue-600 py-2 text-sm text-white hover:bg-blue-700"
+              >
+                进入手动编辑
+              </button>
+            )}
+            {isManualColoringMode && (
+              <button
+                onClick={() => {
+                  setIsManualColoringMode(false);
+                  setSelectedColor(null);
+                  setTooltipData(null);
+                  setIsEraseMode(false);
+                  setColorReplaceState({ isActive: false, step: 'select-source' });
+                  setHighlightColorKey(null);
+                  setIsolateLockedHex(null);
+                  setIsolateHoverHex(null);
+                  setIsMagnifierActive(false);
+                  setMagnifierSelectionArea(null);
+                  setIsSelectMode(false);
+                  setMarqueeRect(null);
+                  setSelectionMenuPos(null);
+                  setSelectionPending(null);
+                  setIsPickingBoardColor(false);
+                  clearEditHistory();
+                }}
+                className="flex w-full items-center justify-center rounded-md bg-gray-700 py-2 text-sm text-white hover:bg-gray-800"
+              >
+                退出编辑
+              </button>
+            )}
+            </aside>
 
-              {/* ++ 手动编辑模式提示信息 ++ */}
-              {isManualColoringMode && mappedPixelData && gridDimensions && (
-                <div className="w-full mb-4 p-3 bg-blue-50 dark:bg-gray-800 rounded-lg shadow-sm border border-blue-100 dark:border-gray-700">
-                  <div className="flex justify-center">
-                    <div className="bg-blue-50 dark:bg-gray-700 border border-blue-100 dark:border-gray-600 rounded-lg p-2 flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 text-xs text-gray-600 dark:text-gray-300 w-full sm:w-auto">
-                      <div className="flex items-center gap-1 w-full sm:w-auto">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        <span>左键点格取色 · 中键/右键拖动画布 · 滚轮缩放</span>
-                      </div>
-                      <span className="hidden sm:inline text-gray-300 dark:text-gray-500">|</span>
-                      <div className="flex items-center gap-1 w-full sm:w-auto">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
-                        <span>推荐电脑操作，上色更精准</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+            <canvas ref={originalCanvasRef} className="hidden"></canvas>
 
-              {/* Canvas Preview Container */}
-              {/* Apply dark mode styles */}
-              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-md border border-gray-100 dark:border-gray-700">
-                {/* 大画布提示信息 */}
+            <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-100 bg-white p-3 shadow-md dark:border-gray-700 dark:bg-gray-800 lg:h-full">
                 {gridDimensions && gridDimensions.N > 100 && (
-                  <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-700 dark:text-blue-300 text-center">
-                    <div className="flex items-center justify-center gap-1">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <span>高精度网格 ({gridDimensions.N}×{gridDimensions.M}) - 画布已自动放大，可左右滚动、放大查看精细图像</span>
-                    </div>
+                  <div className="mb-2 shrink-0 rounded-lg border border-blue-200 bg-blue-50 p-2 text-center text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                    高精度网格 ({gridDimensions.N}×{gridDimensions.M}) — 可滚动、缩放查看
                   </div>
                 )}
-                <div className={`grid grid-cols-1 gap-3 mb-3 sm:mb-4 ${isManualColoringMode ? 'md:grid-cols-3' : 'md:grid-cols-2 xl:grid-cols-4'}`}
-                     style={{ minHeight: '150px' }}>
-                  <div className="flex min-w-0 flex-col">
-                    <p className="mb-1.5 text-center text-xs font-medium text-gray-500 dark:text-gray-400">原图</p>
-                    <ZoomPanViewport className="flex h-[min(62vh,640px)] min-h-[220px] w-full items-start rounded-lg bg-gray-100 p-2 dark:bg-gray-700">
-                      {originalImageSrc && (
+                <div
+                  className={`grid min-h-0 flex-1 gap-2 ${
+                    isManualColoringMode
+                      ? 'grid-cols-[minmax(0,1fr)_minmax(120px,26%)] grid-rows-2'
+                      : 'grid-cols-2 grid-rows-2'
+                  }`}
+                >
+                  <div
+                    className={`flex h-full min-h-0 min-w-0 flex-col ${
+                      isManualColoringMode ? 'col-start-2 row-start-1' : ''
+                    }`}
+                  >
+                    <p className="mb-1 flex shrink-0 items-center justify-center gap-2 text-center text-xs font-medium text-gray-500 dark:text-gray-400">
+                      原图
+                      {isManualColoringMode && (
+                        <button
+                          type="button"
+                          onClick={() => originalPreviewInputRef.current?.click()}
+                          className="rounded border border-gray-300 bg-white px-1.5 py-0.5 text-[10px] font-normal text-gray-600 hover:border-blue-400 hover:text-blue-600 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                        >
+                          更换
+                        </button>
+                      )}
+                    </p>
+                    <ZoomPanViewport
+                      fitKey={`orig-${originalPreviewSrc || originalImageSrc}-${isManualColoringMode}`}
+                      className="min-h-0 w-full flex-1 rounded-lg bg-gray-100 p-1.5 dark:bg-gray-700"
+                    >
+                      {(originalPreviewSrc || originalImageSrc) && (
                         <img
-                          src={originalImageSrc}
+                          src={originalPreviewSrc || originalImageSrc || ''}
                           alt="原图"
-                          className="block w-full h-auto rounded border border-gray-300 object-contain object-top dark:border-gray-600"
+                          className="block max-w-none rounded border border-gray-300 dark:border-gray-600"
                           draggable={false}
                         />
                       )}
                     </ZoomPanViewport>
                   </div>
-                  <div className={`${isManualColoringMode ? 'hidden' : 'flex min-w-0 flex-col'}`}>
-                    <p className="mb-1.5 text-center text-xs font-medium text-gray-500 dark:text-gray-400">抗锯齿</p>
-                    <ZoomPanViewport className="flex h-[min(62vh,640px)] min-h-[220px] w-full items-start rounded-lg bg-gray-100 p-2 dark:bg-gray-700">
+                  <div className={`${isManualColoringMode ? 'hidden' : 'flex h-full min-h-0 min-w-0 flex-col'}`}>
+                    <p className="mb-1 shrink-0 text-center text-xs font-medium text-gray-500 dark:text-gray-400">抗锯齿</p>
+                    <ZoomPanViewport
+                      fitKey={`aa-${originalImageSrc}-${gridDimensions?.N}x${gridDimensions?.M}-${remapTrigger}`}
+                      className="min-h-0 w-full flex-1 rounded-lg bg-gray-100 p-1.5 dark:bg-gray-700"
+                    >
                       <canvas
                         ref={collapsedCanvasRef}
-                        className="block w-full h-auto rounded border border-gray-300 object-contain object-top dark:border-gray-600"
+                        className="block max-w-none rounded border border-gray-300 dark:border-gray-600"
                       />
                     </ZoomPanViewport>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <p className="mb-1.5 text-center text-xs font-medium text-gray-500 dark:text-gray-400">拼豆</p>
+                  <div
+                    className={`flex h-full min-h-0 min-w-0 flex-col ${
+                      isManualColoringMode ? 'col-start-1 row-span-2 row-start-1' : ''
+                    }`}
+                  >
+                    <p className="mb-1 shrink-0 text-center text-xs font-medium text-gray-500 dark:text-gray-400">拼豆</p>
                     <ZoomPanViewport
                       allowLeftPan={!isManualColoringMode}
-                      className="flex h-[min(62vh,640px)] min-h-[220px] w-full items-start rounded-lg bg-gray-100 p-2 dark:bg-gray-700"
+                      allowRightPan={!isSelectMode}
+                      fitKey={`bead-${gridDimensions?.N}x${gridDimensions?.M}-${remapTrigger}-${isManualColoringMode}`}
+                      className="min-h-0 w-full flex-1 rounded-lg bg-gray-100 p-1.5 dark:bg-gray-700"
                     >
                       <PixelatedPreviewCanvas
                         canvasRef={pixelatedCanvasRef}
@@ -2476,12 +2734,25 @@ export default function Home() {
                         onInteraction={handleCanvasInteraction}
                         highlightColorKey={highlightColorKey}
                         onHighlightComplete={handleHighlightComplete}
+                        isolateColorKey={isManualColoringMode ? isolateColorKey : null}
+                        selectionMode={isSelectMode}
+                        selectionRect={marqueeRect}
+                        onMarqueeComplete={handleMarqueeComplete}
+                        onSelectionContextMenu={handleSelectionContextMenu}
+                        boardBackgroundColor={boardBackgroundHex}
                       />
                     </ZoomPanViewport>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <p className="mb-1.5 text-center text-xs font-medium text-gray-500 dark:text-gray-400">效果</p>
-                    <ZoomPanViewport className="flex h-[min(62vh,640px)] min-h-[220px] w-full items-start rounded-lg bg-gray-100 p-2 dark:bg-gray-700">
+                  <div
+                    className={`flex h-full min-h-0 min-w-0 flex-col ${
+                      isManualColoringMode ? 'col-start-2 row-start-2' : ''
+                    }`}
+                  >
+                    <p className="mb-1 shrink-0 text-center text-xs font-medium text-gray-500 dark:text-gray-400">效果</p>
+                    <ZoomPanViewport
+                      fitKey={`fx-${gridDimensions?.N}x${gridDimensions?.M}-${remapTrigger}-${isManualColoringMode}`}
+                      className="min-h-0 w-full flex-1 rounded-lg bg-gray-100 p-1.5 dark:bg-gray-700"
+                    >
                       <PixelatedPreviewCanvas
                         canvasRef={effectCanvasRef}
                         mappedPixelData={mappedPixelData}
@@ -2496,15 +2767,34 @@ export default function Home() {
                     </ZoomPanViewport>
                   </div>
                 </div>
-              </div>
-            </div>
-          </div> // This closes the main div started after originalImageSrc check
-        )}
+            </section>
 
-        {/* ++ HIDE Color Counts in manual mode ++ */}
-        {!isManualColoringMode && originalImageSrc && colorCounts && Object.keys(colorCounts).length > 0 && (
-          // Apply dark mode styles to color counts container
-          <div className="w-full md:max-w-2xl mt-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-100 dark:border-gray-700 color-stats-panel">
+            <aside className="space-y-3 lg:h-full lg:overflow-y-auto">
+        {isManualColoringMode && (
+          <div className="rounded-lg border border-gray-100 bg-white p-3 shadow dark:border-gray-700 dark:bg-gray-800">
+            <EditColorInventory
+              colors={patternColors}
+              selectedColorSystem={selectedColorSystem}
+              isolateLockedHex={isolateLockedHex}
+              isolatePreviewHex={isolateColorKey}
+              onIsolateHover={(hex) => {
+                if (isolateLockedHex) return;
+                setIsolateHoverHex(hex);
+              }}
+              onIsolateToggle={(hex) => {
+                if (isolateLockedHex === hex) {
+                  setIsolateLockedHex(null);
+                  setIsolateHoverHex(null);
+                } else {
+                  setIsolateLockedHex(hex);
+                  setIsolateHoverHex(hex);
+                }
+              }}
+            />
+          </div>
+        )}
+        {!isManualColoringMode && colorCounts && Object.keys(colorCounts).length > 0 && (
+          <div className="color-stats-panel rounded-lg border border-gray-100 bg-white p-4 shadow dark:border-gray-700 dark:bg-gray-800">
             {/* Title color */}
             <h3 className="text-lg font-semibold mb-1 text-gray-700 dark:text-gray-200 text-center">
               去除杂色 
@@ -2649,48 +2939,14 @@ export default function Home() {
           </div>
         )} {/* ++ End of HIDE Color Counts ++ */}
 
-        {/* Message if palette becomes empty (Also hide in manual mode) */}
-         {!isManualColoringMode && originalImageSrc && activeBeadPalette.length === 0 && excludedColorKeys.size > 0 && (
-             // Apply dark mode styles to the warning box
-             <div className="w-full md:max-w-2xl mt-6 bg-yellow-100 dark:bg-yellow-900/50 p-4 rounded-lg shadow border border-yellow-200 dark:border-yellow-800/60 text-center text-sm text-yellow-800 dark:text-yellow-300">
-                 当前可用颜色过少或为空。请在上方统计列表中查看已排除的颜色并恢复部分，或更换色板。
-                 {excludedColorKeys.size > 0 && (
-                      // Apply dark mode styles to the inline "restore all" button
-                      <button
-                          onClick={() => {
-                            setShowExcludedColors(true); // 展开排除颜色列表
-                            // 滚动到颜色列表处
-                            setTimeout(() => {
-                              const listElement = document.querySelector('.color-stats-panel');
-                              if (listElement) {
-                                listElement.scrollIntoView({ behavior: 'smooth' });
-                              }
-                            }, 100);
-                          }}
-                          className="mt-2 ml-2 text-xs py-1 px-2 bg-yellow-200 dark:bg-yellow-700/60 text-yellow-900 dark:text-yellow-200 rounded hover:bg-yellow-300 dark:hover:bg-yellow-600/70 transition-colors"
-                      >
-                          查看已排除颜色 ({excludedColorKeys.size})
-                      </button>
-                  )}
+        {!isManualColoringMode && activeBeadPalette.length === 0 && excludedColorKeys.size > 0 && (
+             <div className="rounded-lg border border-yellow-200 bg-yellow-100 p-3 text-center text-sm text-yellow-800 dark:border-yellow-800/60 dark:bg-yellow-900/50 dark:text-yellow-300">
+                 当前可用颜色过少或为空。请在列表中恢复部分颜色，或更换色板。
              </div>
          )}
 
-        {/* ++ RENDER Enter Manual Mode Button ONLY when NOT in manual mode (before downloads) ++ */}
-        {!isManualColoringMode && originalImageSrc && mappedPixelData && gridDimensions && (
-            <div className="w-full md:max-w-2xl mt-4 space-y-3"> {/* Wrapper div */} 
-             {/* Manual Edit Mode Button */}
-             <button
-                onClick={() => {
-                  setIsManualColoringMode(true); // Enter mode
-                  setSelectedColor(null);
-                  setTooltipData(null);
-                }}
-                className={`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-md hover:shadow-lg hover:translate-y-[-1px]`}
-              >
-                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"> <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" /> </svg>
-                 进入手动编辑模式
-             </button>
-
+        {!isManualColoringMode && mappedPixelData && (
+          <div className="space-y-2">
              <button
                 type="button"
                 onClick={() => {
@@ -2700,43 +2956,71 @@ export default function Home() {
                   );
                   setIsEffectStudioOpen(true);
                 }}
-                className="w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-[#3d342c] hover:bg-[#2b241e] text-[#fbf6ef] shadow-md hover:shadow-lg hover:translate-y-[-1px]"
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#3d342c] py-2.5 text-sm text-[#fbf6ef] hover:bg-[#2b241e]"
               >
                  生成效果图
              </button>
-
-             {/* Focus Mode Button */}
              <button
                 onClick={handleEnterFocusMode}
-                className={`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white shadow-md hover:shadow-lg hover:translate-y-[-1px]`}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-purple-600 py-2.5 text-sm text-white hover:bg-purple-700"
               >
-                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                 </svg>
-                 进入专心拼豆模式（AplhaTest）
+                 专心拼豆
              </button>
-            </div>
-        )} {/* ++ End of RENDER Enter Manual Mode Button ++ */}
-
-        {/* ++ HIDE Download Buttons in manual mode ++ */}
-        {!isManualColoringMode && originalImageSrc && mappedPixelData && (
-            <div className="w-full md:max-w-2xl mt-4">
-              {/* 使用一个大按钮，现在所有的下载设置都通过弹窗控制 */}
               <button
                 onClick={() => setIsDownloadSettingsOpen(true)}
-                disabled={!mappedPixelData || !gridDimensions || gridDimensions.N === 0 || gridDimensions.M === 0 || activeBeadPalette.length === 0}
-                className="w-full py-2.5 px-4 bg-gradient-to-r from-green-500 to-green-600 text-white text-sm sm:text-base rounded-lg hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg hover:translate-y-[-1px] disabled:hover:translate-y-0 disabled:hover:shadow-md"
+                disabled={!gridDimensions || gridDimensions.N === 0 || gridDimensions.M === 0 || activeBeadPalette.length === 0}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-green-600 py-2.5 text-sm text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                 下载拼豆图纸
               </button>
             </div>
-        )} {/* ++ End of HIDE Download Buttons ++ */}
+        )}
+            </aside>
+          </div>
+        )}
+
+            {isCustomPaletteEditorOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-gray-800">
+                   <input
+                    type="file"
+                    accept=".json"
+                    ref={importPaletteInputRef}
+                    onChange={handleImportPaletteFile}
+                    className="hidden"
+                  />
+                  <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+                    <CustomPaletteEditor
+                      allColors={catalogPalette}
+                      currentSelections={customPaletteSelections}
+                      onSelectionChange={handleSelectionChange}
+                      onSaveCustomPalette={handleSaveCustomPalette}
+                      onClose={() => setIsCustomPaletteEditorOpen(false)}
+                      onExportCustomPalette={handleExportCustomPalette}
+                      onImportCustomPalette={triggerImportPalette}
+                      selectedColorSystem={selectedColorSystem}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
 
          {/* Tooltip Display (Needs update in GridTooltip.tsx) */}
          {tooltipData && (
             <GridTooltip tooltipData={tooltipData} selectedColorSystem={selectedColorSystem} />
+          )}
+          {isSelectMode && selectionMenuPos && marqueeRect && (
+            <SelectionContextMenu
+              x={selectionMenuPos.x}
+              y={selectionMenuPos.y}
+              colors={selectionColorStats}
+              selectedColorSystem={selectedColorSystem}
+              onClear={handleSelectionClear}
+              onFill={handleSelectionFillWait}
+              onPickReplaceSource={handleSelectionReplaceSource}
+              onCancelSelection={handleSelectModeToggle}
+              onClose={() => setSelectionMenuPos(null)}
+            />
           )}
 
       </main>
@@ -2756,6 +3040,8 @@ export default function Home() {
             step: 'select-source'
           });
           setHighlightColorKey(null);
+          setIsolateLockedHex(null);
+          setIsolateHoverHex(null);
           setIsMagnifierActive(false);
           setMagnifierSelectionArea(null);
           clearEditHistory();
@@ -2820,7 +3106,7 @@ export default function Home() {
       )}
 
       <footer className="fixed bottom-0 left-0 right-0 z-30 w-full border-t border-[#3a332c]/25 bg-[#1c1815] text-[#9a9084]">
-        <div className="mx-auto flex h-14 w-full max-w-4xl items-center justify-between gap-3 px-4 sm:px-6">
+        <div className="mx-auto flex h-14 w-full max-w-[1920px] items-center justify-between gap-3 px-4 sm:px-6">
           <p className="min-w-0 truncate text-xs sm:text-sm font-medium text-[#efe8dc]/80">
             对色局 · 拼豆底稿 &copy; {new Date().getFullYear()}
           </p>

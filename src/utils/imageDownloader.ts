@@ -1,6 +1,7 @@
 import { GridDownloadOptions } from '../types/downloadTypes';
 import { MappedPixel, PaletteColor } from './pixelation';
 import { getDisplayColorKey, getColorKeyByHex, ColorSystem, colorSystemOptions } from './colorSystemUtils';
+import { transparentColorData } from './pixelEditingUtils';
 
 // 用于获取对比色的工具函数 - 从page.tsx复制
 function getContrastColor(hex: string): string {
@@ -154,13 +155,8 @@ export function importCsvData(file: File): Promise<{
           for (let col = 0; col < N; col++) {
             const cellValue = rowData[col].trim();
             
-            if (cellValue === 'TRANSPARENT' || cellValue === '') {
-              // 外部/透明单元格
-              mappedRow.push({
-                key: 'TRANSPARENT',
-                color: '#FFFFFF',
-                isExternal: true
-              });
+            if (cellValue === 'TRANSPARENT' || cellValue === '' || cellValue.toUpperCase() === 'ERASE') {
+              mappedRow.push({ ...transparentColorData });
             } else {
               // 验证hex颜色格式
               const hexPattern = /^#[0-9A-Fa-f]{6}$/;

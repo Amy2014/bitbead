@@ -22,6 +22,7 @@ const withPWA = require("next-pwa")({
 });
 
 const nextConfig: NextConfig = {
+  transpilePackages: ["image-q"],
   async headers() {
     return [
       {

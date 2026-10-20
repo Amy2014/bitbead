@@ -187,4 +187,128 @@ export function recalculateColorStats(
   });
 
   return { colorCounts, totalCount };
+}
+
+export type GridRect = { c0: number; r0: number; c1: number; r1: number };
+
+export function normalizeGridRect(rect: GridRect): GridRect {
+  return {
+    c0: Math.min(rect.c0, rect.c1),
+    r0: Math.min(rect.r0, rect.r1),
+    c1: Math.max(rect.c0, rect.c1),
+    r1: Math.max(rect.r0, rect.r1),
+  };
+}
+
+export type SelectionColorStat = {
+  hex: string;
+  key: string;
+  color: string;
+  count: number;
+  ratio: number;
+};
+
+export function collectSelectionColorStats(
+  pixelData: MappedPixel[][],
+  rect: GridRect
+): SelectionColorStat[] {
+  const { c0, r0, c1, r1 } = normalizeGridRect(rect);
+  const counts = new Map<string, { key: string; color: string; count: number }>();
+  let total = 0;
+
+  for (let j = r0; j <= r1; j++) {
+    for (let i = c0; i <= c1; i++) {
+      const cell = pixelData[j]?.[i];
+      if (!cell || cell.isExternal || cell.key === TRANSPARENT_KEY) continue;
+      const hex = cell.color.toUpperCase();
+      const prev = counts.get(hex);
+      if (prev) {
+        prev.count += 1;
+      } else {
+        counts.set(hex, { key: cell.key, color: hex, count: 1 });
+      }
+      total += 1;
+    }
+  }
+
+  const denom = total || 1;
+  return Array.from(counts.entries())
+    .map(([hex, item]) => ({
+      hex,
+      key: item.key,
+      color: item.color,
+      count: item.count,
+      ratio: item.count / denom,
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export function applySelectionClear(
+  pixelData: MappedPixel[][],
+  rect: GridRect
+): { next: MappedPixel[][]; changed: boolean } {
+  const { c0, r0, c1, r1 } = normalizeGridRect(rect);
+  const next = pixelData.map((row) => row.map((cell) => ({ ...cell })));
+  let changed = false;
+
+  for (let j = r0; j <= r1; j++) {
+    for (let i = c0; i <= c1; i++) {
+      const cell = next[j]?.[i];
+      if (!cell) continue;
+      if (cell.key === TRANSPARENT_KEY && cell.isExternal) continue;
+      next[j][i] = { ...transparentColorData };
+      changed = true;
+    }
+  }
+
+  return { next, changed };
+}
+
+export function applySelectionFill(
+  pixelData: MappedPixel[][],
+  rect: GridRect,
+  fillColor: { key: string; color: string }
+): { next: MappedPixel[][]; changed: boolean } {
+  const { c0, r0, c1, r1 } = normalizeGridRect(rect);
+  const next = pixelData.map((row) => row.map((cell) => ({ ...cell })));
+  const filled: MappedPixel = { key: fillColor.key, color: fillColor.color, isExternal: false };
+  let changed = false;
+
+  for (let j = r0; j <= r1; j++) {
+    for (let i = c0; i <= c1; i++) {
+      const cell = next[j]?.[i];
+      if (!cell) continue;
+      if (cell.key === filled.key && cell.color.toUpperCase() === filled.color.toUpperCase() && !cell.isExternal) {
+        continue;
+      }
+      next[j][i] = { ...filled };
+      changed = true;
+    }
+  }
+
+  return { next, changed };
+}
+
+export function applySelectionReplace(
+  pixelData: MappedPixel[][],
+  rect: GridRect,
+  sourceColor: { key: string; color: string },
+  targetColor: { key: string; color: string }
+): { next: MappedPixel[][]; changed: boolean } {
+  const { c0, r0, c1, r1 } = normalizeGridRect(rect);
+  const sourceHex = sourceColor.color.toUpperCase();
+  const next = pixelData.map((row) => row.map((cell) => ({ ...cell })));
+  let changed = false;
+
+  for (let j = r0; j <= r1; j++) {
+    for (let i = c0; i <= c1; i++) {
+      const cell = next[j]?.[i];
+      if (!cell || cell.isExternal || cell.key === TRANSPARENT_KEY) continue;
+      if (cell.color.toUpperCase() !== sourceHex) continue;
+      next[j][i] = { key: targetColor.key, color: targetColor.color, isExternal: false };
+      changed = true;
+    }
+  }
+
+  return { next, changed };
 } 

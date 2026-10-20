@@ -13,7 +13,7 @@ interface GridTooltipProps {
   selectedColorSystem?: ColorSystem;
 }
 
-const GridTooltip: React.FC<GridTooltipProps> = ({ tooltipData, selectedColorSystem = 'MARD' }) => {
+const GridTooltip: React.FC<GridTooltipProps> = ({ tooltipData, selectedColorSystem = 'MARD221' }) => {
   if (!tooltipData) return null;
 
   return (

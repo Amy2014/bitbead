@@ -313,25 +313,23 @@ const FloatingColorPalette: React.FC<FloatingColorPaletteProps> = ({
                 <button
                   key={`${colorData.key}-${colorData.color}`}
                   onClick={() => handleColorClick(colorData)}
-                  className={`group relative aspect-square rounded-lg border-2 transition-all duration-200 hover:scale-110 ${
+                  className={`relative flex aspect-square items-center justify-center rounded-lg border-2 px-0.5 font-mono text-[9px] font-semibold leading-none transition-all duration-200 hover:scale-110 ${
                     isSelected
                       ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-200 dark:ring-blue-800 scale-110'
                       : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
                   }`}
-                  style={{ backgroundColor: colorData.color }}
+                  style={{
+                    backgroundColor: colorData.color,
+                    color: (() => {
+                      const n = parseInt(colorData.color.slice(1), 16);
+                      if (Number.isNaN(n)) return '#111827';
+                      const y = 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+                      return y > 168 ? '#111827' : '#ffffff';
+                    })(),
+                  }}
                   title={`${displayKey} (${colorData.color})`}
                 >
-                  {/* 选中指示器 */}
-                  {isSelected && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-2 h-2 bg-white rounded-full shadow-lg"></div>
-                    </div>
-                  )}
-                  
-                  {/* 悬停时显示色号 */}
-                  <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 dark:bg-gray-700 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                    {displayKey}
-                  </div>
+                  {displayKey}
                 </button>
               );
             })}

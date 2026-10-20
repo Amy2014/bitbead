@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useRef, useEffect, TouchEvent, MouseEvent, useState } from 'react';
+import React, { useRef, useEffect, TouchEvent, MouseEvent, PointerEvent, useState } from 'react';
 import { MappedPixel } from '../utils/pixelation';
+import { GridRect, normalizeGridRect } from '../utils/pixelEditingUtils';
 
 interface PixelatedPreviewCanvasProps {
   mappedPixelData: MappedPixel[][] | null;
@@ -18,9 +19,15 @@ interface PixelatedPreviewCanvasProps {
   ) => void;
   highlightColorKey?: string | null;
   onHighlightComplete?: () => void;
+  isolateColorKey?: string | null;
   showGrid?: boolean;
   interactive?: boolean;
   transparentExternal?: boolean;
+  selectionMode?: boolean;
+  selectionRect?: GridRect | null;
+  onMarqueeComplete?: (rect: GridRect, clientX: number, clientY: number) => void;
+  onSelectionContextMenu?: (clientX: number, clientY: number) => void;
+  boardBackgroundColor?: string | null;
 }
 
 // 绘制像素化画布的函数
@@ -31,7 +38,10 @@ const drawPixelatedCanvas = (
   highlightColorKey?: string | null,
   isHighlighting?: boolean,
   showGrid: boolean = true,
-  transparentExternal: boolean = false
+  transparentExternal: boolean = false,
+  isolateColorKey?: string | null,
+  selectionRect?: GridRect | null,
+  boardBackgroundColor?: string | null
 ) => {
   if (!canvas || !dims || !dataToDraw) {
     console.warn("drawPixelatedCanvas: Missing required parameters");
@@ -48,7 +58,8 @@ const drawPixelatedCanvas = (
   const isDarkMode = typeof window !== 'undefined' && document.documentElement.classList.contains('dark');
 
   // Define colors based on mode
-  const externalBackgroundColor = isDarkMode ? '#374151' : '#F3F4F6'; // gray-700 : gray-100
+  const externalBackgroundColor =
+    boardBackgroundColor || (isDarkMode ? '#374151' : '#F3F4F6');
   const gridLineColor = isDarkMode ? '#4B5563' : '#DDDDDD'; // gray-600 : lighter gray
 
   const { N, M } = dims;
@@ -83,13 +94,21 @@ const drawPixelatedCanvas = (
           pixelatedCtx.fillStyle = externalBackgroundColor;
           pixelatedCtx.fillRect(drawX, drawY, fillW, fillH);
         }
+      } else if (
+        isolateColorKey &&
+        cellData.color.toUpperCase() !== isolateColorKey.toUpperCase()
+      ) {
+        if (!transparentExternal) {
+          pixelatedCtx.fillStyle = externalBackgroundColor;
+          pixelatedCtx.fillRect(drawX, drawY, fillW, fillH);
+        }
       } else {
         pixelatedCtx.fillStyle = cellData.color;
         pixelatedCtx.fillRect(drawX, drawY, fillW, fillH);
       }
 
       // 如果正在高亮且当前单元格不是目标颜色，添加半透明黑色蒙版
-      if (isHighlighting && highlightColorKey && !isHollow) {
+      if (!isolateColorKey && isHighlighting && highlightColorKey && !isHollow) {
         let shouldDim = false;
         
         if (cellData.isExternal) {
@@ -111,7 +130,41 @@ const drawPixelatedCanvas = (
       }
     }
   }
+
+  if (selectionRect) {
+    const sel = normalizeGridRect(selectionRect);
+    const x = Math.floor(sel.c0 * cellWidthOutput);
+    const y = Math.floor(sel.r0 * cellHeightOutput);
+    const w = Math.max(1, Math.floor((sel.c1 + 1) * cellWidthOutput) - x);
+    const h = Math.max(1, Math.floor((sel.r1 + 1) * cellHeightOutput) - y);
+    pixelatedCtx.fillStyle = 'rgba(37, 99, 235, 0.18)';
+    pixelatedCtx.fillRect(x, y, w, h);
+    pixelatedCtx.strokeStyle = '#2563eb';
+    pixelatedCtx.lineWidth = 2;
+    pixelatedCtx.setLineDash([5, 3]);
+    pixelatedCtx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    pixelatedCtx.setLineDash([]);
+  }
 };
+
+function ensureSquareGridCanvas(canvas: HTMLCanvasElement, N: number, M: number) {
+  if (N < 1 || M < 1) return;
+  const gridAspect = N / M;
+  const currentAspect = canvas.width > 0 && canvas.height > 0 ? canvas.width / canvas.height : 0;
+  const aspectMismatch = Math.abs(currentAspect - gridAspect) > 0.02;
+  const tooSmall = canvas.width < 8 || canvas.height < 8;
+  if (!aspectMismatch && !tooSmall) return;
+
+  const baseWidth = 500;
+  const minCell = 4;
+  let cell = Math.max(minCell, Math.round(baseWidth / N));
+  if (N > 100) {
+    const maxWidth = typeof window !== 'undefined' ? Math.min(1200, window.innerWidth * 0.9) : 1200;
+    cell = Math.max(minCell, Math.floor(maxWidth / N));
+  }
+  canvas.width = N * cell;
+  canvas.height = M * cell;
+}
 
 const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   mappedPixelData,
@@ -121,14 +174,26 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   onInteraction,
   highlightColorKey,
   onHighlightComplete,
+  isolateColorKey = null,
   showGrid = true,
   interactive = true,
   transparentExternal = false,
+  selectionMode = false,
+  selectionRect = null,
+  onMarqueeComplete,
+  onSelectionContextMenu,
+  boardBackgroundColor = null,
 }) => {
   const [darkModeState, setDarkModeState] = useState<boolean | null>(null);
   const touchStartPosRef = useRef<{ x: number; y: number; pageX: number; pageY: number } | null>(null);
   const touchMovedRef = useRef<boolean>(false);
   const [isHighlighting, setIsHighlighting] = useState(false);
+  const [draftRect, setDraftRect] = useState<GridRect | null>(null);
+  const marqueeRef = useRef<{
+    pointerId: number;
+    startCell: { i: number; j: number };
+  } | null>(null);
+  const suppressClickRef = useRef(false);
 
   // Effect to detect dark mode changes and update state
   useEffect(() => {
@@ -158,7 +223,7 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   useEffect(() => {
     // Ensure darkModeState is not null before drawing
     if (mappedPixelData && gridDimensions && canvasRef.current && darkModeState !== null) {
-      console.log(`Redrawing canvas, dark mode: ${darkModeState}`); // Log redraw trigger
+      ensureSquareGridCanvas(canvasRef.current, gridDimensions.N, gridDimensions.M);
       drawPixelatedCanvas(
         mappedPixelData,
         canvasRef.current,
@@ -166,10 +231,13 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
         highlightColorKey,
         isHighlighting,
         showGrid,
-        transparentExternal
+        transparentExternal,
+        isolateColorKey,
+        draftRect ?? selectionRect,
+        boardBackgroundColor
       );
     }
-  }, [mappedPixelData, gridDimensions, canvasRef, darkModeState, highlightColorKey, isHighlighting, showGrid, transparentExternal]);
+  }, [mappedPixelData, gridDimensions, canvasRef, darkModeState, highlightColorKey, isHighlighting, showGrid, transparentExternal, isolateColorKey, draftRect, selectionRect, boardBackgroundColor]);
 
   // 处理高亮效果
   useEffect(() => {
@@ -189,10 +257,7 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   
   // 鼠标移动时显示提示
   const handleMouseMove = (event: MouseEvent<HTMLCanvasElement>) => {
-    // 只有在非手动模式下才通过mousemove显示tooltip，避免干扰手动上色
-    if (!isManualColoringMode) {
-        onInteraction(event.clientX, event.clientY, event.pageX, event.pageY, false);
-    }
+    onInteraction(event.clientX, event.clientY, event.pageX, event.pageY, false);
   };
 
   // 鼠标离开时隐藏提示
@@ -201,8 +266,80 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
     onInteraction(0, 0, 0, 0, false, true);
   };
 
+  const cellFromClient = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !gridDimensions) return null;
+    const rect = canvas.getBoundingClientRect();
+    const { N, M } = gridDimensions;
+    const i = Math.floor(((clientX - rect.left) / rect.width) * N);
+    const j = Math.floor(((clientY - rect.top) / rect.height) * M);
+    if (i < 0 || j < 0 || i >= N || j >= M) return null;
+    return { i, j };
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!selectionMode || !interactive) return;
+    if (event.button !== 0) return;
+    const cell = cellFromClient(event.clientX, event.clientY);
+    if (!cell) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    suppressClickRef.current = true;
+    marqueeRef.current = {
+      pointerId: event.pointerId,
+      startCell: cell,
+    };
+    setDraftRect({ c0: cell.i, r0: cell.j, c1: cell.i, r1: cell.j });
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!selectionMode) return;
+    const session = marqueeRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    const cell = cellFromClient(event.clientX, event.clientY);
+    if (!cell) return;
+    setDraftRect({
+      c0: session.startCell.i,
+      r0: session.startCell.j,
+      c1: cell.i,
+      r1: cell.j,
+    });
+  };
+
+  const handlePointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!selectionMode) return;
+    const session = marqueeRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    marqueeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      /* already released */
+    }
+    const cell = cellFromClient(event.clientX, event.clientY) ?? session.startCell;
+    const rect = normalizeGridRect({
+      c0: session.startCell.i,
+      r0: session.startCell.j,
+      c1: cell.i,
+      r1: cell.j,
+    });
+    setDraftRect(null);
+    onMarqueeComplete?.(rect, event.clientX, event.clientY);
+  };
+
+  const handleContextMenu = (event: MouseEvent<HTMLCanvasElement>) => {
+    if (!selectionMode) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectionContextMenu?.(event.clientX, event.clientY);
+  };
+
   // 鼠标点击处理（用于手动上色模式）
   const handleClick = (event: MouseEvent<HTMLCanvasElement>) => {
+    if (selectionMode || suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
     // 鼠标点击行为保持不变：
     // 手动模式下：上色
     // 非手动模式下：切换tooltip
@@ -250,6 +387,11 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   
   // 触摸结束时不再自动隐藏提示框
   const handleTouchEnd = () => {
+    if (selectionMode) {
+      touchStartPosRef.current = null;
+      touchMovedRef.current = false;
+      return;
+    }
     // 检查是否是手动模式，并且触摸没有移动（判定为点击）
     if (isManualColoringMode && !touchMovedRef.current && touchStartPosRef.current) {
       // 使用触摸开始时的坐标来执行上色操作
@@ -270,16 +412,21 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
       onMouseMove={interactive ? handleMouseMove : undefined}
       onMouseLeave={interactive ? handleMouseLeave : undefined}
       onClick={interactive ? handleClick : undefined}
+      onPointerDown={interactive ? handlePointerDown : undefined}
+      onPointerMove={interactive ? handlePointerMove : undefined}
+      onPointerUp={interactive ? handlePointerUp : undefined}
+      onPointerCancel={interactive ? handlePointerUp : undefined}
+      onContextMenu={interactive ? handleContextMenu : undefined}
       onTouchStart={interactive ? handleTouchStart : undefined}
       onTouchMove={interactive ? handleTouchMove : undefined}
       onTouchEnd={interactive ? handleTouchEnd : undefined}
       onTouchCancel={interactive ? handleTouchEnd : undefined}
-      className={`border border-gray-300 dark:border-gray-600 w-full max-w-full h-auto rounded block ${
-        !interactive ? 'cursor-default' : isManualColoringMode ? 'cursor-pointer' : 'cursor-grab'
+      className={`block rounded border border-gray-300 dark:border-gray-600 ${
+        !interactive ? 'cursor-default' : selectionMode ? 'cursor-crosshair' : isManualColoringMode ? 'cursor-pointer' : 'cursor-grab'
       }`}
       style={{
         imageRendering: 'pixelated',
-        // touchAction: 'none' // 移除此行以允许页面滚动和缩放
+        touchAction: selectionMode ? 'none' : undefined,
       }}
     />
   );

@@ -142,7 +142,7 @@ export default function FocusMode() {
         const colors = Object.entries(colorCounts).map(([, colorData]) => {
           const data = colorData as { color: string; count: number };
           // 通过hex值获取对应色号系统的色号
-          const displayKey = getColorKeyByHex(data.color, savedColorSystem as ColorSystem || 'MARD');
+          const displayKey = getColorKeyByHex(data.color, savedColorSystem as ColorSystem || 'MARD221');
           return {
             color: data.color,
             name: displayKey, // 使用色号系统的色号作为名称

@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-const MIN_SCALE = 0.25;
+const MIN_SCALE = 0.05;
 const MAX_SCALE = 8;
 const PAN_THRESHOLD_SQ = 36;
 
@@ -11,17 +11,25 @@ interface ZoomPanViewportProps {
   className?: string;
   /** 为 false 时左键不平移，留给点选/上色；改用中键或右键拖动 */
   allowLeftPan?: boolean;
+  /** 为 false 时右键不平移，留给选区菜单 */
+  allowRightPan?: boolean;
+  /** 内容或布局变化时重新自适应完整显示 */
+  fitKey?: string | number;
 }
 
 export default function ZoomPanViewport({
   children,
   className = '',
   allowLeftPan = true,
+  allowRightPan = true,
+  fitKey,
 }: ZoomPanViewportProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const transformRef = useRef(transform);
   transformRef.current = transform;
+  const userZoomedRef = useRef(false);
   const dragRef = useRef<{
     pointerId: number;
     startX: number;
@@ -32,6 +40,57 @@ export default function ZoomPanViewport({
   } | null>(null);
   const suppressClickRef = useRef(false);
 
+  const fitContent = useCallback(() => {
+    const vp = viewportRef.current;
+    const inner = innerRef.current;
+    if (!vp || !inner) return;
+    const cs = getComputedStyle(vp);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const padT = parseFloat(cs.paddingTop) || 0;
+    const padB = parseFloat(cs.paddingBottom) || 0;
+    const vw = vp.clientWidth - padL - padR;
+    const vh = vp.clientHeight - padT - padB;
+    const cw = inner.offsetWidth;
+    const ch = inner.offsetHeight;
+    if (cw < 2 || ch < 2 || vw < 2 || vh < 2) return;
+    const scale = Math.min(vw / cw, vh / ch);
+    const x = padL + (vw - cw * scale) / 2;
+    const y = padT + (vh - ch * scale) / 2;
+    setTransform({ x, y, scale });
+  }, []);
+
+  useEffect(() => {
+    userZoomedRef.current = false;
+    const id = requestAnimationFrame(() => fitContent());
+    return () => cancelAnimationFrame(id);
+  }, [fitKey, fitContent]);
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    const inner = innerRef.current;
+    if (!vp || !inner) return;
+
+    const onResize = () => {
+      if (!userZoomedRef.current) fitContent();
+    };
+    const ro = new ResizeObserver(onResize);
+    ro.observe(vp);
+    ro.observe(inner);
+    inner.querySelectorAll('img, canvas').forEach((el) => ro.observe(el));
+
+    const imgs = inner.querySelectorAll('img');
+    const onLoad = () => {
+      if (!userZoomedRef.current) fitContent();
+    };
+    imgs.forEach((img) => img.addEventListener('load', onLoad));
+
+    return () => {
+      ro.disconnect();
+      imgs.forEach((img) => img.removeEventListener('load', onLoad));
+    };
+  }, [fitKey, children, fitContent]);
+
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -39,6 +98,7 @@ export default function ZoomPanViewport({
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       event.stopPropagation();
+      userZoomedRef.current = true;
       const rect = el.getBoundingClientRect();
       const mx = event.clientX - rect.left;
       const my = event.clientY - rect.top;
@@ -59,7 +119,8 @@ export default function ZoomPanViewport({
 
   const isPanButton = (button: number) => {
     if (button === 0) return allowLeftPan;
-    return button === 1 || button === 2;
+    if (button === 2) return allowRightPan;
+    return button === 1;
   };
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -87,6 +148,7 @@ export default function ZoomPanViewport({
       event.currentTarget.setPointerCapture(event.pointerId);
       drag.moved = true;
       suppressClickRef.current = true;
+      userZoomedRef.current = true;
     }
     setTransform({
       scale: transformRef.current.scale,
@@ -123,11 +185,16 @@ export default function ZoomPanViewport({
       onPointerCancel={endDrag}
       onClickCapture={onClickCapture}
       onContextMenu={(event) => {
-        if (suppressClickRef.current) event.preventDefault();
+        if (suppressClickRef.current || !allowRightPan) event.preventDefault();
+      }}
+      onDoubleClick={() => {
+        userZoomedRef.current = false;
+        fitContent();
       }}
     >
       <div
-        className="w-full origin-top-left will-change-transform"
+        ref={innerRef}
+        className="inline-block origin-top-left will-change-transform"
         style={{
           transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
         }}
