@@ -783,11 +783,9 @@ export default function Home() {
         .then(({ mappedPixelData, gridDimensions }) => {
           console.log(`成功导入CSV文件: ${gridDimensions.N}x${gridDimensions.M}`);
           
-          // 设置导入的数据
+          // 设置导入的数据（原样展示，不经像素化/去背景）
           setMappedPixelData(mappedPixelData);
           setGridDimensions(gridDimensions);
-          setOriginalImageSrc(null);
-          setOriginalPreviewSrc(null);
           
           // 计算颜色统计
           const colorCountsMap: { [key: string]: { count: number; color: string } } = {};
@@ -1234,7 +1232,8 @@ export default function Home() {
     if (originalImageSrc && activeBeadPalette.length > 0) {
        const timeoutId = setTimeout(() => {
          const csvLock = csvImportLockRef.current;
-         if (csvLock && csvLock.src === originalImageSrc && csvLock.n === granularity) {
+         // CSV 导入后保持格子原样，不因模式/色数/去背景等再次处理
+         if (csvLock && csvLock.src === originalImageSrc) {
            return;
          }
          csvImportLockRef.current = null;
