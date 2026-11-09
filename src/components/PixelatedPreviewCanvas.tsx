@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useEffect, TouchEvent, MouseEvent, PointerEvent, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MappedPixel } from '../utils/pixelation';
 import { GridRect, normalizeGridRect } from '../utils/pixelEditingUtils';
 
@@ -189,11 +190,26 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   const touchMovedRef = useRef<boolean>(false);
   const [isHighlighting, setIsHighlighting] = useState(false);
   const [draftRect, setDraftRect] = useState<GridRect | null>(null);
+  const [sizeTip, setSizeTip] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const marqueeRef = useRef<{
     pointerId: number;
     startCell: { i: number; j: number };
   } | null>(null);
   const suppressClickRef = useRef(false);
+
+  const showSelectionSize = (clientX: number, clientY: number, rect: GridRect | null) => {
+    if (!rect) {
+      setSizeTip(null);
+      return;
+    }
+    const box = normalizeGridRect(rect);
+    setSizeTip({
+      x: clientX,
+      y: clientY,
+      w: box.c1 - box.c0 + 1,
+      h: box.r1 - box.r0 + 1,
+    });
+  };
 
   // Effect to detect dark mode changes and update state
   useEffect(() => {
@@ -218,6 +234,10 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
     return () => observer.disconnect();
 
   }, [darkModeState]); // Depend on darkModeState to re-run if needed externally
+
+  useEffect(() => {
+    if (!selectionMode) setSizeTip(null);
+  }, [selectionMode]);
 
   // Update useEffect for drawing to depend on darkModeState as well
   useEffect(() => {
@@ -257,11 +277,15 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
   
   // 鼠标移动时显示提示
   const handleMouseMove = (event: MouseEvent<HTMLCanvasElement>) => {
+    if (selectionMode) {
+      showSelectionSize(event.clientX, event.clientY, draftRect ?? selectionRect);
+    }
     onInteraction(event.clientX, event.clientY, event.pageX, event.pageY, false);
   };
 
   // 鼠标离开时隐藏提示
   const handleMouseLeave = () => {
+    if (!marqueeRef.current) setSizeTip(null);
     // 鼠标离开时总是隐藏tooltip
     onInteraction(0, 0, 0, 0, false, true);
   };
@@ -289,21 +313,31 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
       pointerId: event.pointerId,
       startCell: cell,
     };
-    setDraftRect({ c0: cell.i, r0: cell.j, c1: cell.i, r1: cell.j });
+    const next = { c0: cell.i, r0: cell.j, c1: cell.i, r1: cell.j };
+    setDraftRect(next);
+    showSelectionSize(event.clientX, event.clientY, next);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!selectionMode) return;
     const session = marqueeRef.current;
-    if (!session || session.pointerId !== event.pointerId) return;
+    if (!session || session.pointerId !== event.pointerId) {
+      if (selectionRect) showSelectionSize(event.clientX, event.clientY, selectionRect);
+      return;
+    }
     const cell = cellFromClient(event.clientX, event.clientY);
-    if (!cell) return;
-    setDraftRect({
+    if (!cell) {
+      showSelectionSize(event.clientX, event.clientY, draftRect);
+      return;
+    }
+    const next = {
       c0: session.startCell.i,
       r0: session.startCell.j,
       c1: cell.i,
       r1: cell.j,
-    });
+    };
+    setDraftRect(next);
+    showSelectionSize(event.clientX, event.clientY, next);
   };
 
   const handlePointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
@@ -324,6 +358,7 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
       r1: cell.j,
     });
     setDraftRect(null);
+    showSelectionSize(event.clientX, event.clientY, rect);
     onMarqueeComplete?.(rect, event.clientX, event.clientY);
   };
 
@@ -406,7 +441,11 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
     touchMovedRef.current = false;
   };
 
+  const tipLeft = sizeTip ? Math.min(sizeTip.x + 14, (typeof window !== 'undefined' ? window.innerWidth : sizeTip.x) - 72) : 0;
+  const tipTop = sizeTip ? Math.min(sizeTip.y + 16, (typeof window !== 'undefined' ? window.innerHeight : sizeTip.y) - 32) : 0;
+
   return (
+    <>
     <canvas
       ref={canvasRef}
       onMouseMove={interactive ? handleMouseMove : undefined}
@@ -429,6 +468,19 @@ const PixelatedPreviewCanvas: React.FC<PixelatedPreviewCanvasProps> = ({
         touchAction: selectionMode ? 'none' : undefined,
       }}
     />
+    {typeof document !== 'undefined' &&
+      selectionMode &&
+      sizeTip &&
+      createPortal(
+        <div
+          className="pointer-events-none fixed z-[500] rounded bg-black/75 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-white shadow"
+          style={{ left: tipLeft, top: tipTop }}
+        >
+          {sizeTip.w}*{sizeTip.h}
+        </div>,
+        document.body
+      )}
+    </>
   );
 };
 

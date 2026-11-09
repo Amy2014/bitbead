@@ -17,7 +17,8 @@ import {
   collapseAdjacentSimilarPixels,
   INTRA_CELL_SIMILARITY,
   AA_PREPROCESS_VERSION,
-  removeEdgeConnectedBackground
+  removeEdgeConnectedBackground,
+  sampleAlignedGrid,
 } from '../utils/pixelation';
 
 // 导入新的类型和组件
@@ -80,6 +81,7 @@ function BeadValueSlider({
   step = 1,
   accentClass,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: number;
@@ -88,10 +90,11 @@ function BeadValueSlider({
   step?: number;
   accentClass: string;
   onChange: (value: number) => void;
+  disabled?: boolean;
 }) {
   const display = Number.isInteger(step) ? String(value) : value.toFixed(step < 1 ? 1 : 0);
   return (
-    <div>
+    <div className={disabled ? 'opacity-45' : undefined}>
       <div className="mb-1 flex items-baseline justify-between gap-2">
         <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{label}</span>
         <span className="tabular-nums text-sm font-semibold text-gray-900 dark:text-gray-100">{display}</span>
@@ -100,8 +103,9 @@ function BeadValueSlider({
         <button
           type="button"
           aria-label={`减少${label}`}
+          disabled={disabled}
           onClick={() => onChange(clampNumber(Number((value - step).toFixed(4)), min, max))}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-base leading-none text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-base leading-none text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 dark:disabled:hover:bg-gray-700"
         >
           −
         </button>
@@ -111,14 +115,16 @@ function BeadValueSlider({
           max={max}
           step={step}
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(clampNumber(Number(event.target.value), min, max))}
-          className={`h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-200 dark:bg-gray-600 ${accentClass}`}
+          className={`h-2 w-full appearance-none rounded-full bg-gray-200 dark:bg-gray-600 ${accentClass} ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
         />
         <button
           type="button"
           aria-label={`增加${label}`}
+          disabled={disabled}
           onClick={() => onChange(clampNumber(Number((value + step).toFixed(4)), min, max))}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-base leading-none text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-base leading-none text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 dark:disabled:hover:bg-gray-700"
         >
           +
         </button>
@@ -157,6 +163,9 @@ import CustomPaletteEditor from '../components/CustomPaletteEditor';
 import FloatingColorPalette from '../components/FloatingColorPalette';
 import FloatingToolbar from '../components/FloatingToolbar';
 import { EditBrushStrip, EditColorInventory, PatternColor } from '../components/EditColorWorkbench';
+import GridAlignPanel, { type GridAlignValues } from '../components/GridAlignPanel';
+import ImageCropPanel from '../components/ImageCropPanel';
+import PatternRecognizePanel from '../components/PatternRecognizePanel';
 import MagnifierTool from '../components/MagnifierTool';
 import MagnifierSelectionOverlay from '../components/MagnifierSelectionOverlay';
 import { loadPaletteSelections, savePaletteSelections, presetToSelections, PaletteSelections } from '../utils/localStorageUtils';
@@ -169,8 +178,29 @@ import {
   applySelectionFill,
   applySelectionReplace,
   recalculateColorStats,
+  normalizeGridRect,
 } from '../utils/pixelEditingUtils';
 import SelectionContextMenu from '../components/SelectionContextMenu';
+import BeadLayerPanel from '../components/BeadLayerPanel';
+import {
+  BeadLayer,
+  cloneBeadLayers,
+  clonePixels,
+  compositeBeadLayers,
+  floodFillLayerAtCanvas,
+  mirrorLayer,
+  rotateBeadLayers,
+  rotateBeadLayersByDegrees,
+  rotatePixels,
+  rotatePixelsByDegrees,
+  moveLayer,
+  paintLayerAtCanvas,
+  applyLayerRect,
+  replaceLayerColor,
+  replaceLayerRect,
+  remapColorInLayers,
+  canvasToLayerLocal,
+} from '../utils/beadLayers';
 
 // 1. 导入新的 DonationModal 组件
 import DonationModal from '../components/DonationModal';
@@ -248,6 +278,19 @@ export default function Home() {
     step: 'select-source'
   });
   const [isSelectMode, setIsSelectMode] = useState(false);
+  const [isGridAlignMode, setIsGridAlignMode] = useState(false);
+  const [isCropMode, setIsCropMode] = useState(false);
+  const [isPatternRecognizeMode, setIsPatternRecognizeMode] = useState(false);
+  const [gridAlignConfirming, setGridAlignConfirming] = useState(false);
+  const [gridAlignValues, setGridAlignValues] = useState<GridAlignValues>({
+    cellSize: 8,
+    offsetX: 0,
+    offsetY: 0,
+    marginRight: 0,
+    marginBottom: 0,
+  });
+  /** CSV / 网格对齐确认后锁定：切割数等重映射参数无效 */
+  const [isImportedGridLocked, setIsImportedGridLocked] = useState(false);
   const [isPickingBoardColor, setIsPickingBoardColor] = useState(false);
   const [boardBackgroundHex, setBoardBackgroundHex] = useState<string | null>(null);
   const [marqueeRect, setMarqueeRect] = useState<GridRect | null>(null);
@@ -282,8 +325,15 @@ export default function Home() {
     mappedPixelData: MappedPixel[][];
     colorCounts: { [key: string]: { count: number; color: string } };
     totalBeadCount: number;
+    gridDimensions: { N: number; M: number } | null;
+    beadLayers: BeadLayer[];
+    activeLayerId: string | null;
   }
   const [editHistory, setEditHistory] = useState<EditSnapshot[]>([]);
+  const [beadLayers, setBeadLayers] = useState<BeadLayer[]>([]);
+  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  const layerSeqRef = useRef(1);
+  const layerCsvInputRef = useRef<HTMLInputElement>(null);
 
   // 新增：一键去背景撤回快照（单步）
   const [bgRemovalSnapshot, setBgRemovalSnapshot] = useState<EditSnapshot | null>(null);
@@ -324,9 +374,12 @@ export default function Home() {
       mappedPixelData: mappedPixelData.map(row => row.map(cell => ({ ...cell }))),
       colorCounts: { ...colorCounts },
       totalBeadCount,
+      gridDimensions: gridDimensions ? { ...gridDimensions } : null,
+      beadLayers: cloneBeadLayers(beadLayers),
+      activeLayerId,
     };
     setEditHistory(prev => [...prev.slice(-49), snapshot]);
-  }, [mappedPixelData, colorCounts, totalBeadCount]);
+  }, [mappedPixelData, colorCounts, totalBeadCount, gridDimensions, beadLayers, activeLayerId]);
 
   // 编辑模式多步撤回
   const handleUndoEdit = useCallback(() => {
@@ -335,12 +388,24 @@ export default function Home() {
     setMappedPixelData(snapshot.mappedPixelData);
     setColorCounts(snapshot.colorCounts);
     setTotalBeadCount(snapshot.totalBeadCount);
+    setBeadLayers(cloneBeadLayers(snapshot.beadLayers || []));
+    setActiveLayerId(snapshot.activeLayerId);
+    if (snapshot.gridDimensions) {
+      setGridDimensions(snapshot.gridDimensions);
+      sizeImportedBeadCanvases(snapshot.gridDimensions.N, snapshot.gridDimensions.M);
+    }
     setEditHistory(prev => prev.slice(0, -1));
     showToast('已撤回上一步');
   }, [editHistory, showToast]);
 
   const handleMirrorPattern = useCallback((axis: 'horizontal' | 'vertical') => {
     if (!mappedPixelData) return;
+    if (beadLayers.length > 0 && activeLayerId) {
+      const next = mirrorLayer(beadLayers, activeLayerId, axis);
+      if (next) publishBeadLayers(next);
+      showToast(axis === 'horizontal' ? '已左右镜像当前层' : '已上下镜像当前层');
+      return;
+    }
     saveEditSnapshot();
     if (axis === 'horizontal') {
       setMappedPixelData(
@@ -353,7 +418,73 @@ export default function Home() {
       );
       showToast('已上下镜像');
     }
-  }, [mappedPixelData, saveEditSnapshot, showToast]);
+  }, [mappedPixelData, saveEditSnapshot, showToast, beadLayers, activeLayerId]);
+
+  const handleRotatePattern = (dir: 'cw' | 'ccw') => {
+    if (!mappedPixelData || !gridDimensions) return;
+    saveEditSnapshot();
+    setMarqueeRect(null);
+    setSelectionMenuPos(null);
+    setSelectionPending(null);
+    if (beadLayers.length > 0) {
+      publishBeadLayers(rotateBeadLayers(beadLayers, dir), { skipSnapshot: true });
+      showToast(dir === 'cw' ? '已顺时针旋转整图 90°' : '已逆时针旋转整图 90°');
+      return;
+    }
+    const rotated = rotatePixels(mappedPixelData, dir);
+    const N = rotated[0]?.length ?? 0;
+    const M = rotated.length;
+    setMappedPixelData(rotated);
+    setGridDimensions({ N, M });
+    setGranularity(N);
+    const stats = recalculateColorStats(rotated);
+    setColorCounts(stats.colorCounts);
+    setTotalBeadCount(stats.totalCount);
+    const syntheticImageSrc = generateSyntheticImageFromPixelData(rotated, { N, M });
+    csvImportLockRef.current = { src: syntheticImageSrc, n: N };
+    setOriginalImageSrc(syntheticImageSrc);
+    setIsImportedGridLocked(true);
+    sizeImportedBeadCanvases(N, M);
+    showToast(dir === 'cw' ? '已顺时针旋转整图 90°' : '已逆时针旋转整图 90°');
+  };
+
+  const handleRotateByDegrees = (degrees: number) => {
+    if (!mappedPixelData || !gridDimensions) return;
+    const turned = ((Math.round(degrees) % 360) + 360) % 360;
+    if (turned === 0) return;
+    if (turned === 90) {
+      handleRotatePattern('cw');
+      return;
+    }
+    if (turned === 270) {
+      handleRotatePattern('ccw');
+      return;
+    }
+    saveEditSnapshot();
+    setMarqueeRect(null);
+    setSelectionMenuPos(null);
+    setSelectionPending(null);
+    if (beadLayers.length > 0) {
+      publishBeadLayers(rotateBeadLayersByDegrees(beadLayers, turned), { skipSnapshot: true });
+      showToast(`已旋转整图 ${turned}°`);
+      return;
+    }
+    const rotated = rotatePixelsByDegrees(mappedPixelData, turned);
+    const N = rotated[0]?.length ?? 0;
+    const M = rotated.length;
+    setMappedPixelData(rotated);
+    setGridDimensions({ N, M });
+    setGranularity(N);
+    const stats = recalculateColorStats(rotated);
+    setColorCounts(stats.colorCounts);
+    setTotalBeadCount(stats.totalCount);
+    const syntheticImageSrc = generateSyntheticImageFromPixelData(rotated, { N, M });
+    csvImportLockRef.current = { src: syntheticImageSrc, n: N };
+    setOriginalImageSrc(syntheticImageSrc);
+    setIsImportedGridLocked(true);
+    sizeImportedBeadCanvases(N, M);
+    showToast(`已旋转整图 ${turned}°`);
+  };
 
   // 一键去背景单步撤回
   const handleUndoBgRemoval = useCallback(() => {
@@ -361,6 +492,9 @@ export default function Home() {
     setMappedPixelData(bgRemovalSnapshot.mappedPixelData);
     setColorCounts(bgRemovalSnapshot.colorCounts);
     setTotalBeadCount(bgRemovalSnapshot.totalBeadCount);
+    setBeadLayers(cloneBeadLayers(bgRemovalSnapshot.beadLayers || []));
+    setActiveLayerId(bgRemovalSnapshot.activeLayerId);
+    if (bgRemovalSnapshot.gridDimensions) setGridDimensions(bgRemovalSnapshot.gridDimensions);
     setBgRemovalSnapshot(null);
     showToast('已撤回背景去除');
   }, [bgRemovalSnapshot, showToast]);
@@ -379,6 +513,15 @@ export default function Home() {
 
   const handleMagnifierPixelEdit = (row: number, col: number, colorData: { key: string; color: string }) => {
     if (!mappedPixelData) return;
+    if (beadLayers.length > 0 && activeLayerId) {
+      const next = paintLayerAtCanvas(beadLayers, activeLayerId, col, row, {
+        key: colorData.key,
+        color: colorData.color,
+        isExternal: colorData.key === TRANSPARENT_KEY,
+      });
+      if (next) publishBeadLayers(next);
+      return;
+    }
 
     const oldPixel = mappedPixelData[row][col];
     if (!oldPixel || oldPixel.key === colorData.key) return;
@@ -456,6 +599,10 @@ export default function Home() {
   const mainRef = useRef<HTMLElement>(null);
 
   const catalogPalette = selectedColorSystem === 'MARD221' ? mard221BeadPalette : fullBeadPalette;
+  const editLibraryPalette = useMemo(
+    () => convertPaletteToColorSystem(catalogPalette, selectedColorSystem),
+    [catalogPalette, selectedColorSystem]
+  );
 
   // --- Derived State ---
 
@@ -772,6 +919,105 @@ export default function Home() {
     }
   };
 
+  const publishBeadLayers = (nextLayers: BeadLayer[], options?: { skipSnapshot?: boolean }) => {
+    if (!options?.skipSnapshot) saveEditSnapshot();
+    const { mapped, N, M } = compositeBeadLayers(nextLayers);
+    setBeadLayers(nextLayers);
+    setMappedPixelData(mapped);
+    const dimsChanged = !gridDimensions || gridDimensions.N !== N || gridDimensions.M !== M;
+    setGridDimensions({ N, M });
+    const stats = recalculateColorStats(mapped);
+    setColorCounts(stats.colorCounts);
+    setTotalBeadCount(stats.totalCount);
+    if (dimsChanged) {
+      const syntheticImageSrc = generateSyntheticImageFromPixelData(mapped, { N, M });
+      csvImportLockRef.current = { src: syntheticImageSrc, n: N };
+      setOriginalImageSrc(syntheticImageSrc);
+      setIsImportedGridLocked(true);
+      sizeImportedBeadCanvases(N, M);
+    }
+  };
+
+  const ensureBaseBeadLayers = (): BeadLayer[] => {
+    if (beadLayers.length > 0) return beadLayers;
+    if (!mappedPixelData) return [];
+    return [
+      {
+        id: `layer-${layerSeqRef.current++}`,
+        name: '图层 1',
+        offsetX: 0,
+        offsetY: 0,
+        pixels: clonePixels(mappedPixelData),
+      },
+    ];
+  };
+
+  const handleAddBeadLayerCsv = (file: File) => {
+    if (!mappedPixelData || !gridDimensions) {
+      alert('请先有一张拼豆图再添加图层。');
+      return;
+    }
+    importCsvData(file)
+      .then(({ mappedPixelData: imported, gridDimensions: importedDims }) => {
+        if (importedDims.N < 1 || importedDims.M < 1) {
+          alert('CSV 网格无效。');
+          return;
+        }
+        const base = ensureBaseBeadLayers();
+        const newLayer: BeadLayer = {
+          id: `layer-${layerSeqRef.current++}`,
+          name: `图层 ${base.length + 1}`,
+          offsetX: 0,
+          offsetY: 0,
+          pixels: clonePixels(imported),
+        };
+        const next = [...base, newLayer];
+        setActiveLayerId(newLayer.id);
+        publishBeadLayers(next);
+        showToast(`已添加 ${importedDims.N}×${importedDims.M} 图层`);
+      })
+      .catch((error) => {
+        alert(`无法导入图层：${error instanceof Error ? error.message : String(error)}\n请使用本工具导出的 CSV。`);
+      });
+  };
+
+  const handleMergeBeadLayers = () => {
+    if (beadLayers.length < 2) return;
+    saveEditSnapshot();
+    const { mapped, N, M } = compositeBeadLayers(beadLayers);
+    setBeadLayers([]);
+    setActiveLayerId(null);
+    setMappedPixelData(mapped);
+    setGridDimensions({ N, M });
+    const stats = recalculateColorStats(mapped);
+    setColorCounts(stats.colorCounts);
+    setTotalBeadCount(stats.totalCount);
+    const syntheticImageSrc = generateSyntheticImageFromPixelData(mapped, { N, M });
+    csvImportLockRef.current = { src: syntheticImageSrc, n: N };
+    setOriginalImageSrc(syntheticImageSrc);
+    setIsImportedGridLocked(true);
+    sizeImportedBeadCanvases(N, M);
+    showToast('已合并为单层，可撤回');
+  };
+
+  const handleDeleteBeadLayer = (id: string) => {
+    if (beadLayers.length < 2) return;
+    const next = beadLayers.filter((layer) => layer.id !== id);
+    if (next.length === 0) return;
+    if (activeLayerId === id) setActiveLayerId(next[next.length - 1].id);
+    publishBeadLayers(next);
+  };
+
+  const handleMoveBeadLayer = (id: string, direction: 'up' | 'down') => {
+    const next = moveLayer(beadLayers, id, direction);
+    publishBeadLayers(next);
+  };
+
+  const handleBeadLayerOffset = (id: string, offsetX: number, offsetY: number) => {
+    const next = beadLayers.map((layer) => (layer.id === id ? { ...layer, offsetX, offsetY } : layer));
+    publishBeadLayers(next, { skipSnapshot: true });
+  };
+
   const processFile = (file: File) => {
     // 检查文件类型
     const fileExtension = file.name.split('.').pop()?.toLowerCase();
@@ -782,6 +1028,13 @@ export default function Home() {
       importCsvData(file)
         .then(({ mappedPixelData, gridDimensions }) => {
           console.log(`成功导入CSV文件: ${gridDimensions.N}x${gridDimensions.M}`);
+          setIsGridAlignMode(false);
+          setIsCropMode(false);
+          setIsPatternRecognizeMode(false);
+          setGridAlignConfirming(false);
+          setIsImportedGridLocked(true);
+          setBeadLayers([]);
+          setActiveLayerId(null);
           
           // 设置导入的数据（原样展示，不经像素化/去背景）
           setMappedPixelData(mappedPixelData);
@@ -837,10 +1090,17 @@ export default function Home() {
       // 处理图片文件
       const applyImageSrc = (result: string) => {
         csvImportLockRef.current = null;
+        setIsImportedGridLocked(false);
+        setIsGridAlignMode(false);
+        setIsCropMode(false);
+        setIsPatternRecognizeMode(false);
+        setGridAlignConfirming(false);
         setOriginalImageSrc(result);
         setOriginalPreviewSrc(result);
         setMappedPixelData(null);
         setGridDimensions(null);
+        setBeadLayers([]);
+        setActiveLayerId(null);
         setColorCounts(null);
         setTotalBeadCount(0);
         setInitialGridColorKeys(new Set()); // ++ 重置初始键 ++
@@ -941,6 +1201,7 @@ export default function Home() {
 
   // 添加像素化模式切换处理函数
   const handlePixelationModeChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    if (isImportedGridLocked) return;
     const newMode = event.target.value as PixelationMode;
     if (Object.values(PixelationMode).includes(newMode)) {
         setPixelationMode(newMode);
@@ -950,6 +1211,196 @@ export default function Home() {
     } else {
         console.warn(`无效的像素化模式: ${newMode}`);
     }
+  };
+
+  const enterGridAlignMode = () => {
+    if (!originalImageSrc) {
+      alert('请先上传图片后再使用网格对齐。');
+      return;
+    }
+    if (isManualColoringMode) {
+      alert('请先退出编辑模式后再使用网格对齐。');
+      return;
+    }
+    setIsCropMode(false);
+    setIsPatternRecognizeMode(false);
+    setIsGridAlignMode(true);
+    setGridAlignConfirming(false);
+  };
+
+  const cancelGridAlignMode = () => {
+    setIsGridAlignMode(false);
+    setGridAlignConfirming(false);
+  };
+
+  const enterCropMode = () => {
+    if (!originalImageSrc) {
+      alert('请先上传图片后再裁剪。');
+      return;
+    }
+    if (isManualColoringMode) {
+      alert('请先退出编辑模式后再裁剪。');
+      return;
+    }
+    setIsGridAlignMode(false);
+    setIsPatternRecognizeMode(false);
+    setIsCropMode(true);
+  };
+
+  const cancelCropMode = () => {
+    setIsCropMode(false);
+  };
+
+  const confirmCrop = (croppedDataUrl: string) => {
+    csvImportLockRef.current = null;
+    setIsImportedGridLocked(false);
+    setIsCropMode(false);
+    setIsPatternRecognizeMode(false);
+    setOriginalImageSrc(croppedDataUrl);
+    setOriginalPreviewSrc(croppedDataUrl);
+    setMappedPixelData(null);
+    setGridDimensions(null);
+    setBeadLayers([]);
+    setActiveLayerId(null);
+    setColorCounts(null);
+    setTotalBeadCount(0);
+    setInitialGridColorKeys(new Set());
+    setRemapTrigger((prev) => prev + 1);
+  };
+
+  const confirmGridAlignConversion = async () => {
+    const src = originalImageSrc;
+    if (!src || activeBeadPalette.length === 0) {
+      alert('缺少图片或可用色板，无法转换。');
+      return;
+    }
+    setGridAlignConfirming(true);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new window.Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('图片加载失败'));
+        image.src = src;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('无法创建 Canvas');
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const { mappedData, gridDimensions: dims } = sampleAlignedGrid(
+        imageData,
+        gridAlignValues,
+        activeBeadPalette,
+        maxColorCount,
+        similarityThreshold
+      );
+      if (dims.N < 1 || dims.M < 1) {
+        alert('当前参数下没有完整格子，请调大可用区域或减小格子。');
+        return;
+      }
+
+      const colorCountsMap: { [key: string]: { count: number; color: string } } = {};
+      let totalCount = 0;
+      mappedData.forEach((row) => {
+        row.forEach((cell) => {
+          if (cell && !cell.isExternal && cell.key !== TRANSPARENT_KEY) {
+            const colorKey = cell.color.toUpperCase();
+            if (colorCountsMap[colorKey]) colorCountsMap[colorKey].count++;
+            else colorCountsMap[colorKey] = { count: 1, color: cell.color };
+            totalCount++;
+          }
+        });
+      });
+
+      setMappedPixelData(mappedData);
+      setGridDimensions(dims);
+      setColorCounts(colorCountsMap);
+      setTotalBeadCount(totalCount);
+      setInitialGridColorKeys(new Set(Object.keys(colorCountsMap)));
+      setGranularity(dims.N);
+      setIsManualColoringMode(false);
+      setSelectedColor(null);
+      setIsEraseMode(false);
+      clearEditHistory();
+      setBgRemovalSnapshot(null);
+      setBeadLayers([]);
+      setActiveLayerId(null);
+
+      const syntheticImageSrc = generateSyntheticImageFromPixelData(mappedData, dims);
+      csvImportLockRef.current = { src: syntheticImageSrc, n: dims.N };
+      setIsImportedGridLocked(true);
+      sizeImportedBeadCanvases(dims.N, dims.M);
+      setOriginalImageSrc(syntheticImageSrc);
+      setOriginalPreviewSrc(src);
+      setIsGridAlignMode(false);
+    } catch (error) {
+      console.error('网格对齐转换失败:', error);
+      alert(`网格对齐转换失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setGridAlignConfirming(false);
+    }
+  };
+
+  const enterPatternRecognizeMode = () => {
+    if (!originalImageSrc) {
+      alert('请先上传图纸截图（建议先裁剪掉页眉图例）。');
+      return;
+    }
+    if (isManualColoringMode) {
+      alert('请先退出编辑模式后再识别图纸。');
+      return;
+    }
+    setIsCropMode(false);
+    setIsGridAlignMode(false);
+    setIsPatternRecognizeMode(true);
+  };
+
+  const cancelPatternRecognizeMode = () => {
+    setIsPatternRecognizeMode(false);
+  };
+
+  const completePatternRecognize = ({
+    mappedData,
+    gridDimensions: dims,
+  }: {
+    mappedData: MappedPixel[][];
+    gridDimensions: { N: number; M: number };
+  }) => {
+    const src = originalImageSrc;
+    const colorCountsMap: { [key: string]: { count: number; color: string } } = {};
+    let totalCount = 0;
+    mappedData.forEach((row) => {
+      row.forEach((cell) => {
+        if (cell && !cell.isExternal && cell.key !== TRANSPARENT_KEY) {
+          const colorKey = cell.color.toUpperCase();
+          if (colorCountsMap[colorKey]) colorCountsMap[colorKey].count++;
+          else colorCountsMap[colorKey] = { count: 1, color: cell.color };
+          totalCount++;
+        }
+      });
+    });
+    setMappedPixelData(mappedData);
+    setGridDimensions(dims);
+    setColorCounts(colorCountsMap);
+    setTotalBeadCount(totalCount);
+    setInitialGridColorKeys(new Set(Object.keys(colorCountsMap)));
+    setGranularity(dims.N);
+    setIsManualColoringMode(false);
+    setSelectedColor(null);
+    setIsEraseMode(false);
+    clearEditHistory();
+    setBgRemovalSnapshot(null);
+    setBeadLayers([]);
+    setActiveLayerId(null);
+    const syntheticImageSrc = generateSyntheticImageFromPixelData(mappedData, dims);
+    csvImportLockRef.current = { src: syntheticImageSrc, n: dims.N };
+    setIsImportedGridLocked(true);
+    sizeImportedBeadCanvases(dims.N, dims.M);
+    setOriginalImageSrc(syntheticImageSrc);
+    if (src) setOriginalPreviewSrc(src);
+    setIsPatternRecognizeMode(false);
   };
 
   // 修改pixelateImage函数接收模式参数
@@ -1229,14 +1680,18 @@ export default function Home() {
 
   // 修改useEffect中的pixelateImage调用，加入模式参数
   useEffect(() => {
+    if (isGridAlignMode || isCropMode || isPatternRecognizeMode) {
+      return;
+    }
     if (originalImageSrc && activeBeadPalette.length > 0) {
        const timeoutId = setTimeout(() => {
          const csvLock = csvImportLockRef.current;
-         // CSV 导入后保持格子原样，不因模式/色数/去背景等再次处理
+         // CSV / 网格对齐确认后保持格子原样，不因模式/色数等再次处理
          if (csvLock && csvLock.src === originalImageSrc) {
            return;
          }
          csvImportLockRef.current = null;
+         setIsImportedGridLocked(false);
          if (originalImageSrc && originalCanvasRef.current && collapsedCanvasRef.current && pixelatedCanvasRef.current && activeBeadPalette.length > 0) {
            console.log("useEffect triggered: Processing image due to src, granularity, threshold, palette selection, mode or remap trigger.");
            pixelateImage(originalImageSrc, granularity, similarityThreshold, activeBeadPalette, pixelationMode, maxColorCount, centerColorMinSharePercent, useCenterColorShare);
@@ -1264,7 +1719,7 @@ export default function Home() {
         // setTotalBeadCount(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [originalImageSrc, granularity, similarityThreshold, maxColorCount, centerColorMinSharePercent, useCenterColorShare, activeBeadPalette, pixelationMode, remapTrigger, selectedColorSystem]);
+  }, [originalImageSrc, granularity, similarityThreshold, maxColorCount, centerColorMinSharePercent, useCenterColorShare, activeBeadPalette, pixelationMode, remapTrigger, selectedColorSystem, isGridAlignMode, isCropMode, isPatternRecognizeMode]);
 
   useEffect(() => {
     const src = pixelatedCanvasRef.current;
@@ -1352,95 +1807,77 @@ export default function Home() {
     };
 
     // --- Handler to toggle color exclusion ---
-    const handleToggleExcludeColor = (hexKey: string) => {
+    const handleToggleExcludeColor = (hexKeyRaw: string, options?: { stayInEditMode?: boolean }) => {
+        const hexKey = hexKeyRaw.toUpperCase();
+        const stayInEditMode = !!options?.stayInEditMode;
         const currentExcluded = excludedColorKeys;
         const isExcluding = !currentExcluded.has(hexKey);
 
         if (isExcluding) {
-            console.log(`---------\nAttempting to EXCLUDE color: ${hexKey}`);
-
-            // --- 确保初始颜色键已记录 ---
             if (initialGridColorKeys.size === 0) {
-                console.error("Cannot exclude color: Initial grid color keys not yet calculated.");
                 alert("无法排除颜色，初始颜色数据尚未准备好，请稍候。");
                 return;
             }
-            console.log("Initial Grid Hex Keys:", Array.from(initialGridColorKeys));
-            console.log("Currently Excluded Hex Keys (before this op):", Array.from(currentExcluded));
 
             const nextExcludedKeys = new Set(currentExcluded);
             nextExcludedKeys.add(hexKey);
 
-            // --- 使用初始颜色键进行重映射目标逻辑 ---
-            // 1. 从初始网格颜色集合开始（hex值）
             const potentialRemapHexKeys = new Set(initialGridColorKeys);
-            console.log("Step 1: Potential Hex Keys (from initial):", Array.from(potentialRemapHexKeys));
-
-            // 2. 移除当前要排除的hex键
             potentialRemapHexKeys.delete(hexKey);
-            console.log(`Step 2: Potential Hex Keys (after removing ${hexKey}):`, Array.from(potentialRemapHexKeys));
-
-            // 3. 移除任何*其他*当前也被排除的hex键
             currentExcluded.forEach(excludedHexKey => {
                 potentialRemapHexKeys.delete(excludedHexKey);
             });
-            console.log("Step 3: Potential Hex Keys (after removing other current exclusions):", Array.from(potentialRemapHexKeys));
 
-            // 4. 基于剩余的hex值创建重映射调色板
             const remapTargetPalette = catalogPalette.filter(color => potentialRemapHexKeys.has(color.hex.toUpperCase()));
-            const remapTargetHexKeys = remapTargetPalette.map(p => p.hex.toUpperCase());
-            console.log("Step 4: Remap Target Palette Hex Keys:", remapTargetHexKeys);
-
-            // 5. *** 关键检查 ***：如果在考虑所有排除项后，没有*初始*颜色可供映射，则阻止此次排除
             if (remapTargetPalette.length === 0) {
-                console.warn(`Cannot exclude color '${hexKey}'. No other valid colors from the initial grid remain after considering all current exclusions.`);
                 alert(`无法排除颜色 ${hexKey}，因为图中最初存在的其他可用颜色也已被排除。请先恢复部分其他颜色。`);
-                console.log("---------");
-                return; // 停止排除过程
+                return;
             }
-            console.log(`Remapping target palette (based on initial grid colors minus all exclusions) contains ${remapTargetPalette.length} colors.`);
 
-            // 查找被排除颜色的RGB值用于重映射
             const excludedColorData = catalogPalette.find(p => p.hex.toUpperCase() === hexKey);
-            // 检查排除颜色的数据是否存在
              if (!excludedColorData || !mappedPixelData || !gridDimensions) {
-                 console.error("Cannot exclude color: Missing data for remapping.");
                  alert("无法排除颜色，缺少必要数据。");
-                console.log("---------");
                  return;
              }
 
-            console.log(`Remapping cells currently using excluded color: ${hexKey}`);
-            // 仅在需要重映射时创建深拷贝
+            const replacementColor = findClosestPaletteColor(excludedColorData.rgb, remapTargetPalette);
             const newMappedData = mappedPixelData.map(row => row.map(cell => ({...cell})));
             let remappedCount = 0;
             const { N, M } = gridDimensions;
-            let firstReplacementHex: string | null = null;
 
             for (let j = 0; j < M; j++) {
                 for (let i = 0; i < N; i++) {
                 const cell = newMappedData[j]?.[i];
-                    // 此条件正确地仅针对具有排除hex值的单元格
                     if (cell && !cell.isExternal && cell.color.toUpperCase() === hexKey) {
-                        // *** 使用派生的 remapTargetPalette 查找最接近的颜色 ***
-                    const replacementColor = findClosestPaletteColor(excludedColorData.rgb, remapTargetPalette);
-                        if (!firstReplacementHex) firstReplacementHex = replacementColor.hex;
-                        newMappedData[j][i] = { 
-                            ...cell, 
-                            key: replacementColor.key, 
-                            color: replacementColor.hex 
+                        newMappedData[j][i] = {
+                            ...cell,
+                            key: replacementColor.key,
+                            color: replacementColor.hex
                         };
                     remappedCount++;
                 }
                 }
             }
-            console.log(`Remapped ${remappedCount} cells. First replacement hex found was: ${firstReplacementHex || 'N/A'}`);
+            console.log(`Remapped ${remappedCount} cells of ${hexKey} -> ${replacementColor.hex}`);
 
-            // 同时更新状态
-            setExcludedColorKeys(nextExcludedKeys); // 应用此颜色的排除
-            setMappedPixelData(newMappedData); // 使用重映射的数据更新
+            if (stayInEditMode) saveEditSnapshot();
+            if (isolateLockedHex === hexKey) {
+              setIsolateLockedHex(null);
+              setIsolateHoverHex(null);
+            }
 
-            // 基于*新*映射数据重新计算计数（以hex为键）
+            setExcludedColorKeys(nextExcludedKeys);
+            if (beadLayers.length > 0) {
+              publishBeadLayers(
+                remapColorInLayers(beadLayers, hexKey, {
+                  key: replacementColor.key,
+                  hex: replacementColor.hex,
+                }),
+                { skipSnapshot: true }
+              );
+            } else {
+            setMappedPixelData(newMappedData);
+
             const newCounts: { [hexKey: string]: { count: number; color: string } } = {};
             let newTotalCount = 0;
             newMappedData.flat().forEach(cell => {
@@ -1455,33 +1892,22 @@ export default function Home() {
             });
             setColorCounts(newCounts);
             setTotalBeadCount(newTotalCount);
-            console.log("State updated after exclusion and local remap based on initial grid colors.");
-            console.log("---------");
-
-            // ++ 在更新状态后，重新绘制 Canvas ++
-            if (pixelatedCanvasRef.current && gridDimensions) {
-              setMappedPixelData(newMappedData);
-              // 不要调用 setGridDimensions，因为颜色排除不需要改变网格尺寸
-            } else {
-               console.error("Canvas ref or grid dimensions missing, skipping draw call in handleToggleExcludeColor.");
             }
 
         } else {
-            // --- Re-including ---
-            console.log(`---------\nAttempting to RE-INCLUDE color: ${hexKey}`);
-            console.log(`Re-including color: ${hexKey}. Triggering full remap.`);
             const nextExcludedKeys = new Set(currentExcluded);
             nextExcludedKeys.delete(hexKey);
             setExcludedColorKeys(nextExcludedKeys);
-            // 此处无需重置 initialGridColorKeys，完全重映射会通过 pixelateImage 重新计算它
-            setRemapTrigger(prev => prev + 1); // *** KEPT setRemapTrigger here for re-inclusion ***
-            console.log("---------");
+            if (!isImportedGridLocked) {
+              setRemapTrigger(prev => prev + 1);
+            }
         }
-        // ++ Exit manual mode if colors are excluded/included ++
-        setIsManualColoringMode(false);
-        setSelectedColor(null);
-        clearEditHistory();
-        setBgRemovalSnapshot(null);
+        if (!stayInEditMode) {
+          setIsManualColoringMode(false);
+          setSelectedColor(null);
+          clearEditHistory();
+          setBgRemovalSnapshot(null);
+        }
     };
 
     const handleExcludeByCountThreshold = () => {
@@ -1590,6 +2016,9 @@ export default function Home() {
       mappedPixelData: mappedPixelData.map(row => row.map(cell => ({ ...cell }))),
       colorCounts: colorCounts ? { ...colorCounts } : {},
       totalBeadCount,
+      gridDimensions: gridDimensions ? { ...gridDimensions } : null,
+      beadLayers: cloneBeadLayers(beadLayers),
+      activeLayerId,
     });
     // 去背景会大幅改变数据，清空编辑撤回历史
     setEditHistory([]);
@@ -1625,6 +2054,11 @@ export default function Home() {
   const floodFillErase = (startRow: number, startCol: number, targetKey: string) => {
     if (!mappedPixelData || !gridDimensions) return;
     if (!cellMatchesIsolate(mappedPixelData[startRow]?.[startCol])) return;
+    if (beadLayers.length > 0 && activeLayerId) {
+      const next = floodFillLayerAtCanvas(beadLayers, activeLayerId, startCol, startRow, targetKey);
+      if (next) publishBeadLayers(next);
+      return;
+    }
 
     const { N, M } = gridDimensions;
     const newPixelData = mappedPixelData.map(row => row.map(cell => ({ ...cell })));
@@ -1760,6 +2194,31 @@ export default function Home() {
       if (isClick && isManualColoringMode && selectedColor) {
         // 手动上色模式逻辑保持不变
         // ...现有代码...
+        if (beadLayers.length > 0 && activeLayerId) {
+          const { minX, minY } = compositeBeadLayers(beadLayers);
+          const layer = beadLayers.find((item) => item.id === activeLayerId);
+          if (!layer) return;
+          const { lx, ly } = canvasToLayerLocal(layer, i, j, minX, minY);
+          const currentLayerCell = layer.pixels[ly]?.[lx];
+          if (!cellMatchesIsolate(currentLayerCell || { ...transparentColorData })) return;
+          let newCellData: MappedPixel;
+          if (selectedColor.key === TRANSPARENT_KEY) {
+            newCellData = { ...transparentColorData };
+          } else {
+            newCellData = { ...selectedColor, isExternal: false };
+          }
+          const previous = currentLayerCell;
+          if (
+            previous &&
+            newCellData.key === previous.key &&
+            newCellData.isExternal === previous.isExternal
+          ) {
+            return;
+          }
+          const next = paintLayerAtCanvas(beadLayers, activeLayerId, i, j, newCellData);
+          if (next) publishBeadLayers(next);
+          return;
+        }
         const newPixelData = mappedPixelData.map(row => row.map(cell => ({ ...cell })));
         const currentCell = newPixelData[j]?.[i];
 
@@ -2084,6 +2543,14 @@ export default function Home() {
 
   const handleSelectionClear = () => {
     if (!mappedPixelData || !marqueeRect) return;
+    if (beadLayers.length > 0 && activeLayerId) {
+      const rect = normalizeGridRect(marqueeRect);
+      const next = applyLayerRect(beadLayers, activeLayerId, rect, { ...transparentColorData });
+      if (next) publishBeadLayers(next);
+      setSelectionMenuPos(null);
+      setSelectionPending(null);
+      return;
+    }
     const { next, changed } = applySelectionClear(mappedPixelData, marqueeRect);
     if (changed) commitMappedPixelData(next);
     setSelectionMenuPos(null);
@@ -2094,6 +2561,18 @@ export default function Home() {
     if (!mappedPixelData || !marqueeRect) return;
     if (!selectedColor || selectedColor.key === TRANSPARENT_KEY) {
       showToast('请先选择画笔颜色');
+      return;
+    }
+    if (beadLayers.length > 0 && activeLayerId) {
+      const rect = normalizeGridRect(marqueeRect);
+      const next = applyLayerRect(beadLayers, activeLayerId, rect, {
+        key: selectedColor.key,
+        color: selectedColor.color,
+        isExternal: false,
+      });
+      if (next) publishBeadLayers(next);
+      setSelectionMenuPos(null);
+      setSelectionPending(null);
       return;
     }
     const { next, changed } = applySelectionFill(mappedPixelData, marqueeRect, selectedColor);
@@ -2112,6 +2591,18 @@ export default function Home() {
     if (!mappedPixelData || !marqueeRect || !selectionPending) return false;
     if (colorData.key === TRANSPARENT_KEY) return false;
     if (selectionPending.kind !== 'replace') return false;
+    if (beadLayers.length > 0 && activeLayerId) {
+      const rect = normalizeGridRect(marqueeRect);
+      const next = replaceLayerRect(beadLayers, activeLayerId, rect, selectionPending.source.color, {
+        key: colorData.key,
+        color: colorData.color,
+        isExternal: false,
+      });
+      if (next) publishBeadLayers(next);
+      setHighlightColorKey(null);
+      setSelectionPending(null);
+      return true;
+    }
     const { next, changed } = applySelectionReplace(
       mappedPixelData,
       marqueeRect,
@@ -2203,6 +2694,15 @@ export default function Home() {
   // 新增：执行颜色替换
   const handleColorReplace = (sourceColor: { key: string; color: string }, targetColor: { key: string; color: string }) => {
     if (!mappedPixelData || !gridDimensions) return;
+    if (beadLayers.length > 0 && activeLayerId) {
+      const next = replaceLayerColor(beadLayers, activeLayerId, sourceColor.color, {
+        key: targetColor.key,
+        color: targetColor.color,
+        isExternal: false,
+      });
+      if (next) publishBeadLayers(next);
+      return;
+    }
 
     const { N, M } = gridDimensions;
     const newPixelData = mappedPixelData.map(row => row.map(cell => ({ ...cell })));
@@ -2366,6 +2866,17 @@ export default function Home() {
         <input type="file" accept="image/jpeg, image/png, image/gif, .csv, text/csv, application/csv, text/plain" onChange={handleFileChange} ref={fileInputRef} className="hidden" />
         <input
           type="file"
+          accept=".csv,text/csv,application/csv,text/plain"
+          ref={layerCsvInputRef}
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) handleAddBeadLayerCsv(file);
+          }}
+        />
+        <input
+          type="file"
           accept="image/jpeg, image/png, image/gif, image/webp"
           onChange={handleReplaceOriginalPreview}
           ref={originalPreviewInputRef}
@@ -2408,8 +2919,59 @@ export default function Home() {
               <p className="text-sm font-medium text-gray-700 dark:text-gray-200">换图 / 导入 CSV</p>
               <p className="text-[11px] text-gray-400">点击或拖放替换</p>
             </div>
-            {!isManualColoringMode && (
+            {isPatternRecognizeMode && (
+              <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800 shadow-sm dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-200">
+                <p className="font-medium">正在识别现成图纸</p>
+                <p className="mt-1 leading-snug opacity-90">
+                  建议先裁剪。自动/手动切格后 OCR 色号，认不出为空。保存后锁定，不走像素化。
+                </p>
+                <button
+                  type="button"
+                  onClick={cancelPatternRecognizeMode}
+                  className="mt-2 rounded border border-sky-300 bg-white px-2 py-1 text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-200"
+                >
+                  退出识别
+                </button>
+              </div>
+            )}
+            {isCropMode && (
+              <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs text-violet-800 shadow-sm dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200">
+                <p className="font-medium">正在裁剪</p>
+                <p className="mt-1 leading-snug opacity-90">
+                  框选图纸区域，去掉页眉、图例、水印。确认后用裁切图走原有处理；取消则不动当前结果。
+                </p>
+                <button
+                  type="button"
+                  onClick={cancelCropMode}
+                  className="mt-2 rounded border border-violet-300 bg-white px-2 py-1 text-violet-700 hover:bg-violet-100 dark:border-violet-700 dark:bg-violet-950 dark:text-violet-200"
+                >
+                  取消裁剪
+                </button>
+              </div>
+            )}
+            {isGridAlignMode && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 shadow-sm dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200">
+                <p className="font-medium">正在网格对齐</p>
+                <p className="mt-1 leading-snug opacity-90">
+                  中间画布调节格子大小与偏移。确认后才会写入拼豆图稿；取消则回到原流程，卡通/真实/感知色差不受影响。
+                </p>
+                <button
+                  type="button"
+                  onClick={cancelGridAlignMode}
+                  className="mt-2 rounded border border-emerald-300 bg-white px-2 py-1 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200"
+                >
+                  取消对齐
+                </button>
+              </div>
+            )}
+
+            {!isManualColoringMode && !isGridAlignMode && !isCropMode && !isPatternRecognizeMode && (
               <div className="grid w-full grid-cols-1 gap-3 rounded-lg border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+                {isImportedGridLocked && (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+                    当前为 CSV / 网格对齐结果，切割数量、合并阈值、最大色数与处理模式不可用。重新上传图片后恢复。
+                  </p>
+                )}
                 <BeadValueSlider
                   label="横轴切割数量"
                   value={granularity}
@@ -2417,6 +2979,7 @@ export default function Home() {
                   max={300}
                   accentClass="accent-rose-500"
                   onChange={setGranularity}
+                  disabled={isImportedGridLocked}
                 />
                 <BeadValueSlider
                   label="颜色合并阈值"
@@ -2425,6 +2988,7 @@ export default function Home() {
                   max={100}
                   accentClass="accent-amber-500"
                   onChange={setSimilarityThreshold}
+                  disabled={isImportedGridLocked}
                 />
                 <BeadValueSlider
                   label="最大色数"
@@ -2433,6 +2997,7 @@ export default function Home() {
                   max={300}
                   accentClass="accent-sky-500"
                   onChange={setMaxColorCount}
+                  disabled={isImportedGridLocked}
                 />
 
                 {/* 快捷按钮 */}
@@ -2451,6 +3016,30 @@ export default function Home() {
                   >
                     回撤上一步
                   </button>
+                  <button
+                    type="button"
+                    onClick={enterCropMode}
+                    disabled={!originalImageSrc || isImportedGridLocked}
+                    className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-violet-200 bg-violet-50 px-2.5 text-xs text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-800/40"
+                  >
+                    裁剪
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enterPatternRecognizeMode}
+                    disabled={!originalImageSrc || isImportedGridLocked}
+                    className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-sky-200 bg-sky-50 px-2.5 text-xs text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-700 dark:bg-sky-900/30 dark:text-sky-200 dark:hover:bg-sky-800/40"
+                  >
+                    识别图纸
+                  </button>
+                  <button
+                    type="button"
+                    onClick={enterGridAlignMode}
+                    disabled={!originalImageSrc || isImportedGridLocked}
+                    className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-emerald-200 bg-emerald-50 px-2.5 text-xs text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-800/40"
+                  >
+                    网格对齐
+                  </button>
                   <span className="ml-auto inline-flex h-8 items-center whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
                     {gridDimensions
                       ? `${gridDimensions.N} × ${gridDimensions.M} 格`
@@ -2459,7 +3048,7 @@ export default function Home() {
                 </div>
 
                 {pixelationMode !== PixelationMode.Average && (
-                <div className="space-y-2">
+                <div className={`space-y-2 ${isImportedGridLocked ? 'opacity-45' : ''}`}>
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-gray-700 dark:text-gray-300">中心色判定</p>
@@ -2471,8 +3060,9 @@ export default function Home() {
                       type="button"
                       role="switch"
                       aria-checked={useCenterColorShare}
+                      disabled={isImportedGridLocked}
                       onClick={() => setUseCenterColorShare((prev) => !prev)}
-                      className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${useCenterColorShare ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      className={`relative h-6 w-10 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed ${useCenterColorShare ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
                     >
                       <span
                         className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-[left] ${useCenterColorShare ? 'left-[18px]' : 'left-0.5'}`}
@@ -2488,20 +3078,22 @@ export default function Home() {
                       step={0.5}
                       accentClass="accent-blue-500"
                       onChange={setCenterColorMinSharePercent}
+                      disabled={isImportedGridLocked}
                     />
                   )}
                 </div>
                 )}
 
                 {/* Pixelation Mode Selector */}
-                <div>
+                <div className={isImportedGridLocked ? 'opacity-45' : undefined}>
                   <label htmlFor="pixelationModeSelect" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">处理模式</label>
                   <div className="flex items-center gap-2">
                     <select
                       id="pixelationModeSelect"
                       value={pixelationMode}
+                      disabled={isImportedGridLocked}
                       onChange={handlePixelationModeChange}
-                      className="h-8 w-full rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                      className="h-8 w-full rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 focus:border-blue-500 focus:ring-blue-500 disabled:cursor-not-allowed dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
                     >
                       <option value={PixelationMode.Dominant} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">卡通 (主色)</option>
                       <option value={PixelationMode.Average} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">真实 (平均)</option>
@@ -2581,7 +3173,10 @@ export default function Home() {
                   }
                   onMirrorHorizontal={() => handleMirrorPattern('horizontal')}
                   onMirrorVertical={() => handleMirrorPattern('vertical')}
-                  libraryColors={activeBeadPalette}
+                  onRotateCw={() => handleRotatePattern('cw')}
+                  onRotateCcw={() => handleRotatePattern('ccw')}
+                  onRotateByDegrees={handleRotateByDegrees}
+                  libraryColors={editLibraryPalette}
                   isSelectMode={isSelectMode}
                   onSelectModeToggle={handleSelectModeToggle}
                   selectionHint={selectionHint}
@@ -2611,6 +3206,19 @@ export default function Home() {
                   boardBackgroundColor={boardBackgroundHex}
                 />
               </div>
+            )}
+
+            {isManualColoringMode && mappedPixelData && gridDimensions && (
+              <BeadLayerPanel
+                layers={beadLayers}
+                activeLayerId={activeLayerId}
+                onSelect={setActiveLayerId}
+                onAdd={() => layerCsvInputRef.current?.click()}
+                onMerge={handleMergeBeadLayers}
+                onDelete={handleDeleteBeadLayer}
+                onMove={handleMoveBeadLayer}
+                onOffsetChange={handleBeadLayerOffset}
+              />
             )}
 
             {!isManualColoringMode && mappedPixelData && gridDimensions && (
@@ -2658,6 +3266,36 @@ export default function Home() {
             <canvas ref={originalCanvasRef} className="hidden"></canvas>
 
             <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-100 bg-white p-3 shadow-md dark:border-gray-700 dark:bg-gray-800 lg:h-full">
+                {isPatternRecognizeMode && originalImageSrc ? (
+                  <PatternRecognizePanel
+                    imageSrc={originalImageSrc}
+                    values={gridAlignValues}
+                    onChange={setGridAlignValues}
+                    selectedColorSystem={selectedColorSystem}
+                    onComplete={completePatternRecognize}
+                    onCancel={cancelPatternRecognizeMode}
+                  />
+                ) : isCropMode && originalImageSrc ? (
+                  <ImageCropPanel
+                    imageSrc={originalImageSrc}
+                    onConfirm={confirmCrop}
+                    onCancel={cancelCropMode}
+                  />
+                ) : isGridAlignMode && originalImageSrc ? (
+                  <GridAlignPanel
+                    imageSrc={originalImageSrc}
+                    values={gridAlignValues}
+                    onChange={setGridAlignValues}
+                    onConfirm={confirmGridAlignConversion}
+                    onCancel={cancelGridAlignMode}
+                    confirming={gridAlignConfirming}
+                    maxColorCount={maxColorCount}
+                    onMaxColorCountChange={setMaxColorCount}
+                    similarityThreshold={similarityThreshold}
+                    onSimilarityThresholdChange={setSimilarityThreshold}
+                  />
+                ) : (
+                <>
                 {gridDimensions && gridDimensions.N > 100 && (
                   <div className="mb-2 shrink-0 rounded-lg border border-blue-200 bg-blue-50 p-2 text-center text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
                     高精度网格 ({gridDimensions.N}×{gridDimensions.M}) — 可滚动、缩放查看
@@ -2766,6 +3404,8 @@ export default function Home() {
                     </ZoomPanViewport>
                   </div>
                 </div>
+                </>
+                )}
             </section>
 
             <aside className="space-y-3 lg:h-full lg:overflow-y-auto">
@@ -2789,6 +3429,7 @@ export default function Home() {
                   setIsolateHoverHex(hex);
                 }
               }}
+              onExcludeColor={(hex) => handleToggleExcludeColor(hex, { stayInEditMode: true })}
             />
           </div>
         )}

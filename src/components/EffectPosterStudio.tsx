@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import { downloadOriginalAndWatermarked } from '../utils/watermark';
 
 type Finish = 'none' | 'gloss' | 'sequin' | 'velvet' | 'frost';
 
@@ -146,10 +147,7 @@ export default function EffectPosterStudio({ isOpen, artworkSrc, onClose }: Effe
     ctx.fillText('paint everything', W / 2, H - footer * 0.32);
     ctx.restore();
 
-    const a = document.createElement('a');
-    a.href = canvas.toDataURL('image/png');
-    a.download = '对色局-拼豆效果图.png';
-    a.click();
+    downloadOriginalAndWatermarked(canvas, '对色局-拼豆效果图.png');
   };
 
   if (!isOpen) return null;

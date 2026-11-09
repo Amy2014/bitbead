@@ -2,6 +2,7 @@ import { GridDownloadOptions } from '../types/downloadTypes';
 import { MappedPixel, PaletteColor } from './pixelation';
 import { getDisplayColorKey, getColorKeyByHex, ColorSystem, colorSystemOptions } from './colorSystemUtils';
 import { transparentColorData } from './pixelEditingUtils';
+import { downloadOriginalAndWatermarked } from './watermark';
 
 // 用于获取对比色的工具函数 - 从page.tsx复制
 function getContrastColor(hex: string): string {
@@ -438,15 +439,10 @@ export async function downloadImage({
     }
 
     try {
-      const dataURL = downloadCanvas.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = showCellNumbers
+      const filename = showCellNumbers
         ? `对色局-${paletteName}-${N}x${M}.png`
         : `对色局-${paletteName}-${N}x${M}-像素.png`;
-      link.href = dataURL;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      downloadOriginalAndWatermarked(downloadCanvas, filename);
 
       if (options.exportCsv) {
         exportCsvData({

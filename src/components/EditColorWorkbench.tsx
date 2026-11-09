@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { ColorSystem, getColorKeyByHex, sortColorsByHue } from '../utils/colorSystemUtils';
+import React, { useMemo, useState } from 'react';
+import { ColorSystem, getColorKeyByHex, groupColorsBySeries } from '../utils/colorSystemUtils';
 import { TRANSPARENT_KEY } from '../utils/pixelEditingUtils';
 import { ColorReplaceState } from '../hooks/useManualEditingState';
 import { findClosestPaletteColorCiede2000, hexToRgb, PaletteColor } from '../utils/pixelation';
@@ -77,6 +77,9 @@ export function EditBrushStrip({
   onPickEraser,
   onMirrorHorizontal,
   onMirrorVertical,
+  onRotateCw,
+  onRotateCcw,
+  onRotateByDegrees,
   libraryColors,
   isSelectMode,
   onSelectModeToggle,
@@ -94,6 +97,9 @@ export function EditBrushStrip({
   onPickEraser: () => void;
   onMirrorHorizontal: () => void;
   onMirrorVertical: () => void;
+  onRotateCw: () => void;
+  onRotateCcw: () => void;
+  onRotateByDegrees: (degrees: number) => void;
   libraryColors: PaletteColor[];
   isSelectMode?: boolean;
   onSelectModeToggle?: () => void;
@@ -110,9 +116,14 @@ export function EditBrushStrip({
     !colorReplaceState.isActive &&
     !isSelectMode &&
     !isPickingBoardColor;
+  const [rotateDegrees, setRotateDegrees] = useState(0);
   const [sampledHex, setSampledHex] = useState<string | null>(null);
   const [eyedropperError, setEyedropperError] = useState<string | null>(null);
   const [isPicking, setIsPicking] = useState(false);
+  const librarySeries = useMemo(
+    () => groupColorsBySeries(libraryColors, selectedColorSystem),
+    [libraryColors, selectedColorSystem]
+  );
 
   const selectedCode =
     selectedColor && selectedColor.key !== TRANSPARENT_KEY
@@ -184,6 +195,52 @@ export function EditBrushStrip({
         <ToolButton title="上下镜像整张拼豆图" onClick={onMirrorVertical}>
           上下镜像
         </ToolButton>
+        <ToolButton title="整图顺时针旋转 90°" onClick={onRotateCw}>
+          顺时针90°
+        </ToolButton>
+        <ToolButton title="整图逆时针旋转 90°" onClick={onRotateCcw}>
+          逆时针90°
+        </ToolButton>
+        <div className="flex items-center gap-1 rounded-md border border-gray-200 bg-white px-1.5 py-0.5 dark:border-gray-600 dark:bg-gray-800">
+          <span className="whitespace-nowrap text-[11px] text-gray-500">任意角</span>
+          <button
+            type="button"
+            className="h-6 w-6 rounded text-xs"
+            onClick={() => setRotateDegrees((d) => Math.max(-180, d - 1))}
+          >
+            −
+          </button>
+          <input
+            type="range"
+            min={-180}
+            max={180}
+            step={1}
+            value={rotateDegrees}
+            onChange={(e) => setRotateDegrees(Number(e.target.value))}
+            className="h-2 w-24 cursor-pointer appearance-none rounded-full bg-gray-200 accent-amber-500"
+          />
+          <input
+            type="number"
+            min={-180}
+            max={180}
+            step={1}
+            value={rotateDegrees}
+            onChange={(e) => setRotateDegrees(Number(e.target.value) || 0)}
+            className="h-6 w-12 rounded border border-gray-200 bg-white px-1 text-[11px] dark:border-gray-600 dark:bg-gray-700"
+          />
+          <span className="text-[11px] text-gray-400">°</span>
+          <button
+            type="button"
+            disabled={rotateDegrees === 0}
+            className="h-6 rounded px-1.5 text-[11px] text-amber-700 disabled:opacity-40 dark:text-amber-300"
+            onClick={() => {
+              onRotateByDegrees(rotateDegrees);
+              setRotateDegrees(0);
+            }}
+          >
+            应用
+          </button>
+        </div>
         <ToolButton
           active={!!isPickingBoardColor}
           title="从色区3选择豆板背景色"
@@ -298,43 +355,53 @@ export function EditBrushStrip({
               ? '点这里选择豆板背景色'
               : colorReplaceState.isActive && colorReplaceState.step === 'select-target'
               ? '点这里选择替换成的颜色（可含图上没有的色）'
-              : `可选图上没有的颜色 · ${libraryColors.length} 色`}
+              : `全色库按色系排列 · ${libraryColors.length} 色`}
           </p>
         </div>
         <div
-          className={`max-h-44 overflow-y-auto rounded-md border p-1.5 ${
+          className={`max-h-56 overflow-y-auto rounded-md border p-1.5 ${
             isPickingBoardColor || (colorReplaceState.isActive && colorReplaceState.step === 'select-target')
               ? 'border-amber-400 ring-2 ring-amber-200 dark:border-amber-500 dark:ring-amber-900/40'
               : 'border-gray-200 dark:border-gray-600'
           }`}
         >
-          <div className="flex flex-wrap gap-1">
-            {sortColorsByHue(libraryColors.map((c) => ({ ...c, color: c.hex }))).map((c) => {
-              const hex = c.hex.toUpperCase();
-              const code = getColorKeyByHex(hex, selectedColorSystem);
-              const isBrush =
-                selectedColor?.key !== TRANSPARENT_KEY &&
-                selectedColor?.color.toUpperCase() === hex;
-              const isBoard = boardBackgroundColor?.toUpperCase() === hex;
-              return (
-                <button
-                  key={hex}
-                  type="button"
-                  onClick={() => (onLibrarySelect ?? onBrushSelect)({ key: hex, color: hex })}
-                  className={`flex h-7 min-w-7 items-center justify-center rounded border px-0.5 font-mono text-[9px] font-semibold leading-none ${
-                    isBoard && isPickingBoardColor
-                      ? 'border-gray-900 ring-2 ring-blue-400 dark:border-white'
-                      : isBrush
-                      ? 'border-gray-900 ring-2 ring-amber-400 dark:border-white'
-                      : 'border-gray-300 dark:border-gray-600'
-                  }`}
-                  style={{ backgroundColor: hex, color: swatchInk(hex) }}
-                  title={`${code} ${hex}`}
-                >
-                  {code}
-                </button>
-              );
-            })}
+          <div className="space-y-1.5">
+            {librarySeries.map((group) => (
+              <div key={group.prefix}>
+                <div className="sticky top-0 z-10 mb-0.5 flex items-center gap-1.5 bg-white/95 px-0.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900/95 dark:text-gray-400">
+                  <span>{group.prefix} 系</span>
+                  <span className="text-gray-300 dark:text-gray-600">{group.colors.length}</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {group.colors.map((c) => {
+                    const hex = c.hex.toUpperCase();
+                    const code = getColorKeyByHex(hex, selectedColorSystem);
+                    const isBrush =
+                      selectedColor?.key !== TRANSPARENT_KEY &&
+                      selectedColor?.color.toUpperCase() === hex;
+                    const isBoard = boardBackgroundColor?.toUpperCase() === hex;
+                    return (
+                      <button
+                        key={hex}
+                        type="button"
+                        onClick={() => (onLibrarySelect ?? onBrushSelect)({ key: hex, color: hex })}
+                        className={`flex h-7 min-w-7 items-center justify-center rounded border px-0.5 font-mono text-[9px] font-semibold leading-none ${
+                          isBoard && isPickingBoardColor
+                            ? 'border-gray-900 ring-2 ring-blue-400 dark:border-white'
+                            : isBrush
+                            ? 'border-gray-900 ring-2 ring-amber-400 dark:border-white'
+                            : 'border-gray-300 dark:border-gray-600'
+                        }`}
+                        style={{ backgroundColor: hex, color: swatchInk(hex) }}
+                        title={`${code} ${hex}`}
+                      >
+                        {code}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -349,6 +416,7 @@ export function EditColorInventory({
   isolatePreviewHex,
   onIsolateHover,
   onIsolateToggle,
+  onExcludeColor,
 }: {
   colors: PatternColor[];
   selectedColorSystem: ColorSystem;
@@ -356,6 +424,7 @@ export function EditColorInventory({
   isolatePreviewHex: string | null;
   onIsolateHover: (hex: string | null) => void;
   onIsolateToggle: (hex: string) => void;
+  onExcludeColor: (hex: string) => void;
 }) {
   const total = colors.reduce((sum, c) => sum + c.count, 0) || 1;
 
@@ -364,7 +433,7 @@ export function EditColorInventory({
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
         <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">色区1 · 当前色号</p>
         <p className="text-[11px] text-gray-400">
-          {isolateLockedHex ? '已锁定，再点取消' : '悬停预览，点击锁定'}
+          {isolateLockedHex ? '已锁定，再点取消' : '点色号锁定，点删除排除并重映射'}
         </p>
       </div>
       <div
@@ -377,6 +446,7 @@ export function EditColorInventory({
               <th className="px-2 py-1.5 font-medium">色号</th>
               <th className="px-2 py-1.5 font-medium text-right">颗数</th>
               <th className="px-2 py-1.5 font-medium text-right">%</th>
+              <th className="px-2 py-1.5 font-medium text-right">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -412,6 +482,19 @@ export function EditColorInventory({
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-gray-400">
                     {((c.count / total) * 100).toFixed(1)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    <button
+                      type="button"
+                      title={`排除 ${code}（与首页去除杂色相同，会映射到最近可用色）`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onExcludeColor(c.hex);
+                      }}
+                      className="rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300"
+                    >
+                      删除
+                    </button>
                   </td>
                 </tr>
               );

@@ -29,7 +29,16 @@ mard221List.forEach((item) => {
   mard221CodeToHex.set(item.key, hex);
 });
 
-function normalizeMard221Code(code: string): string | undefined {
+export function getMard221Keys(): string[] {
+  return mard221List.map((item) => item.key);
+}
+
+export function getHexByMard221Key(code: string): string | undefined {
+  const normalized = normalizeMard221Code(code);
+  return normalized ? mard221CodeToHex.get(normalized) : undefined;
+}
+
+export function normalizeMard221Code(code: string): string | undefined {
   const match = code.trim().toUpperCase().match(/^([A-Z]+)0*([0-9]+)$/);
   if (!match) return undefined;
   const candidate = `${match[1]}${parseInt(match[2], 10)}`;
@@ -244,4 +253,70 @@ export function sortColorsByHue<T extends { color: string }>(colors: T[]): T[] {
     // 明度也相近时，按饱和度排序（高饱和度在前，让鲜艳的颜色更突出）
     return hslB.s - hslA.s;
   });
+}
+
+function seriesPrefix(displayKey: string, colorSystem: ColorSystem): string {
+  if (colorSystem === '盼盼' || colorSystem === '咪小窝') {
+    if (/^\d+$/.test(displayKey)) {
+      const num = parseInt(displayKey, 10);
+      if (num <= 20) return '1-20';
+      if (num <= 50) return '21-50';
+      if (num <= 100) return '51-100';
+      if (num <= 200) return '101-200';
+      return '200+';
+    }
+    return '其他';
+  }
+  return displayKey.match(/^[A-Z]+/)?.[0] || '其他';
+}
+
+function compareDisplayKeys(a: string, b: string, colorSystem: ColorSystem): number {
+  if (colorSystem === '盼盼' || colorSystem === '咪小窝') {
+    return (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0);
+  }
+  const prefixA = a.match(/^[A-Z]+/)?.[0] || '';
+  const prefixB = b.match(/^[A-Z]+/)?.[0] || '';
+  if (prefixA !== prefixB) return prefixA.localeCompare(prefixB);
+  return (parseInt(a.replace(/^[A-Z]+/, ''), 10) || 0) - (parseInt(b.replace(/^[A-Z]+/, ''), 10) || 0);
+}
+
+function compareSeriesPrefixes(a: string, b: string): number {
+  if (a === '其他') return 1;
+  if (b === '其他') return -1;
+  const numA = parseInt(a, 10);
+  const numB = parseInt(b, 10);
+  if (!Number.isNaN(numA) && !Number.isNaN(numB)) return numA - numB;
+  return a.localeCompare(b, 'en');
+}
+
+export type ColorSeriesGroup = {
+  prefix: string;
+  colors: PaletteColor[];
+};
+
+/** 按当前色号系统的字母系列（A/B/C…）或数字段分组，组内按色号排序。 */
+export function groupColorsBySeries(
+  colors: PaletteColor[],
+  colorSystem: ColorSystem
+): ColorSeriesGroup[] {
+  const groups = new Map<string, PaletteColor[]>();
+  colors.forEach((color) => {
+    const displayKey = getDisplayColorKey(color.hex, colorSystem);
+    const prefix = seriesPrefix(displayKey, colorSystem);
+    const list = groups.get(prefix);
+    if (list) list.push(color);
+    else groups.set(prefix, [color]);
+  });
+  groups.forEach((list) => {
+    list.sort((a, b) =>
+      compareDisplayKeys(
+        getDisplayColorKey(a.hex, colorSystem),
+        getDisplayColorKey(b.hex, colorSystem),
+        colorSystem
+      )
+    );
+  });
+  return Array.from(groups.keys())
+    .sort(compareSeriesPrefixes)
+    .map((prefix) => ({ prefix, colors: groups.get(prefix) || [] }));
 } 

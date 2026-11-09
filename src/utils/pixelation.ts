@@ -559,6 +559,138 @@ export function findClosestPaletteColorCiede2000(
     return findClosestCiede2000(targetRgb, palette, palette.map((color) => rgbToLab(color.rgb)));
 }
 
+/** 手动网格对齐：源图像素坐标参数（不影响现有 N 均分像素化） */
+export interface GridAlignParams {
+  cellSize: number;
+  offsetX: number;
+  offsetY: number;
+  marginRight?: number;
+  marginBottom?: number;
+}
+
+export function computeAlignedGridSize(
+  imgWidth: number,
+  imgHeight: number,
+  params: GridAlignParams
+): { N: number; M: number } {
+  const cell = Math.max(1, params.cellSize);
+  const usableW = imgWidth - params.offsetX - (params.marginRight ?? 0);
+  const usableH = imgHeight - params.offsetY - (params.marginBottom ?? 0);
+  return {
+    N: Math.max(0, Math.floor(usableW / cell)),
+    M: Math.max(0, Math.floor(usableH / cell)),
+  };
+}
+
+/**
+ * 按手动对齐的格子取中心像素，再用与「感知色差」相同的 WuQuant + CIEDE2000
+ * 按画面贡献选保留色（不是按颗数砍高频/低频）。
+ */
+export function sampleAlignedGrid(
+  imageData: ImageData,
+  params: GridAlignParams,
+  palette: PaletteColor[],
+  maxColorCount: number = 20,
+  similarityThreshold: number = 0
+): { mappedData: MappedPixel[][]; gridDimensions: { N: number; M: number } } {
+  const { N, M } = computeAlignedGridSize(imageData.width, imageData.height, params);
+  const empty = (): MappedPixel[][] =>
+    Array.from({ length: Math.max(M, 0) }, () =>
+      Array.from({ length: Math.max(N, 0) }, () => ({ ...transparentColorData }))
+    );
+
+  if (!palette.length || N <= 0 || M <= 0) {
+    return { mappedData: empty(), gridDimensions: { N: Math.max(N, 0), M: Math.max(M, 0) } };
+  }
+
+  const cell = Math.max(1, params.cellSize);
+  const paletteLabs = palette.map((color) => rgbToLab(color.rgb));
+  const data = imageData.data;
+  const imgW = imageData.width;
+  const imgH = imageData.height;
+  const cellRgb: (RgbColor | null)[][] = Array.from({ length: M }, () => Array(N).fill(null));
+
+  for (let j = 0; j < M; j++) {
+    for (let i = 0; i < N; i++) {
+      const cx = Math.floor(params.offsetX + (i + 0.5) * cell);
+      const cy = Math.floor(params.offsetY + (j + 0.5) * cell);
+      if (cx < 0 || cy < 0 || cx >= imgW || cy >= imgH) continue;
+      cellRgb[j][i] = sampleOpaquePixel(data, imgW, cx, cy);
+    }
+  }
+
+  const skipMask: boolean[][] = Array.from({ length: M }, (_, j) =>
+    Array.from({ length: N }, (_, i) => !cellRgb[j][i])
+  );
+  const mappedData = remapGridWithWuQuant(
+    cellRgb,
+    skipMask,
+    palette,
+    paletteLabs,
+    palette[0],
+    maxColorCount
+  );
+  if (similarityThreshold > 0) {
+    mergeSimilarMappedColors(mappedData, palette, similarityThreshold);
+  }
+
+  return { mappedData, gridDimensions: { N, M } };
+}
+
+function mergeSimilarMappedColors(
+  mappedData: MappedPixel[][],
+  palette: PaletteColor[],
+  similarityThreshold: number
+): void {
+  const keyToRgb = new Map<string, RgbColor>();
+  const keyToColor = new Map<string, PaletteColor>();
+  palette.forEach((color) => {
+    keyToRgb.set(color.key, color.rgb);
+    keyToColor.set(color.key, color);
+  });
+
+  const counts = new Map<string, number>();
+  mappedData.flat().forEach((cell) => {
+    if (!cell || cell.isExternal || cell.key === transparentColorData.key) return;
+    counts.set(cell.key, (counts.get(cell.key) || 0) + 1);
+  });
+
+  const colorsByFrequency = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([key]) => key);
+  const replaced = new Set<string>();
+
+  for (let i = 0; i < colorsByFrequency.length; i++) {
+    const currentKey = colorsByFrequency[i];
+    if (replaced.has(currentKey)) continue;
+    const currentRgb = keyToRgb.get(currentKey);
+    if (!currentRgb) continue;
+    const currentColor = keyToColor.get(currentKey);
+    if (!currentColor) continue;
+
+    for (let j = i + 1; j < colorsByFrequency.length; j++) {
+      const lowerKey = colorsByFrequency[j];
+      if (replaced.has(lowerKey)) continue;
+      const lowerRgb = keyToRgb.get(lowerKey);
+      if (!lowerRgb) continue;
+      if (colorDistance(currentRgb, lowerRgb) < similarityThreshold) {
+        replaced.add(lowerKey);
+        for (let r = 0; r < mappedData.length; r++) {
+          for (let c = 0; c < mappedData[r].length; c++) {
+            if (mappedData[r][c].key === lowerKey) {
+              mappedData[r][c] = {
+                key: currentKey,
+                color: currentColor.hex,
+                isExternal: false,
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 function findClosestCiede2000(
     targetRgb: RgbColor,
     palette: PaletteColor[],
@@ -717,6 +849,83 @@ function nearestMappedGrid(
     );
 }
 
+function remapGridWithWuQuant(
+    cellRgb: (RgbColor | null)[][],
+    skipMask: boolean[][],
+    palette: PaletteColor[],
+    paletteLabs: LabColor[],
+    fallback: PaletteColor,
+    maxColorCount: number
+): MappedPixel[][] {
+    const M = cellRgb.length;
+    const N = cellRgb[0]?.length ?? 0;
+    const mappedData: MappedPixel[][] = Array.from({ length: M }, () =>
+        Array.from({ length: N }, () => ({ ...transparentColorData }))
+    );
+
+    const opaqueRgba: number[] = [];
+    let opaqueCount = 0;
+    for (let j = 0; j < M; j++) {
+        for (let i = 0; i < N; i++) {
+            const rgb = cellRgb[j][i];
+            if (!rgb || skipMask[j][i]) continue;
+            opaqueRgba.push(rgb.r, rgb.g, rgb.b, 255);
+            opaqueCount++;
+        }
+    }
+
+    if (opaqueCount === 0) return mappedData;
+
+    const colorLimit = Math.max(1, Math.min(Math.floor(maxColorCount) || palette.length, palette.length, opaqueCount));
+    const nearestFallback = () => {
+        for (let j = 0; j < M; j++) {
+            for (let i = 0; i < N; i++) {
+                if (skipMask[j][i]) continue;
+                const rgb = cellRgb[j][i];
+                if (!rgb) continue;
+                const bead = findClosestCiede2000(rgb, palette, paletteLabs);
+                mappedData[j][i] = { key: bead.key, color: bead.hex, isExternal: false };
+            }
+        }
+        return mappedData;
+    };
+
+    try {
+        const histogramImage = imageQUtils.PointContainer.fromUint8Array(
+            Uint8Array.from(opaqueRgba),
+            opaqueCount,
+            1
+        );
+        const wuPalette = buildPaletteSync([histogramImage], {
+            colorDistanceFormula: 'ciede2000',
+            paletteQuantization: 'wuquant',
+            colors: colorLimit,
+        });
+        const wuColors = wuPalette.getPointContainer().getPointArray().map((point) => ({
+            r: point.r,
+            g: point.g,
+            b: point.b,
+        }));
+        const beadPalette = snapWuPaletteToBeads(wuColors, palette, paletteLabs);
+        const working = beadPalette.length > 0 ? beadPalette : [fallback];
+        const workingLabs = working.map((color) => rgbToLab(color.rgb));
+
+        for (let j = 0; j < M; j++) {
+            for (let i = 0; i < N; i++) {
+                if (skipMask[j][i]) continue;
+                const rgb = cellRgb[j][i];
+                if (!rgb) continue;
+                const bead = findClosestCiede2000(rgb, working, workingLabs);
+                mappedData[j][i] = { key: bead.key, color: bead.hex, isExternal: false };
+            }
+        }
+        return mappedData;
+    } catch (error) {
+        console.error('image-q WuQuant failed, falling back to nearest CIEDE2000:', error);
+        return nearestFallback();
+    }
+}
+
 function snapWuPaletteToBeads(
     wuColors: { r: number; g: number; b: number }[],
     palette: PaletteColor[],
@@ -774,67 +983,14 @@ function quantizePerceptualGrid(
         })
     );
 
-    const opaqueRgba: number[] = [];
-    let opaqueCount = 0;
-
-    for (let j = 0; j < M; j++) {
-        for (let i = 0; i < N; i++) {
-            const rgb = cellRgb[j][i];
-            if (!rgb || bgMask[j][i]) continue;
-            opaqueRgba.push(rgb.r, rgb.g, rgb.b, 255);
-            opaqueCount++;
-        }
-    }
-
-    if (opaqueCount === 0) {
-        return emptyGrid();
-    }
-
-    const colorLimit = Math.max(1, Math.min(Math.floor(maxColorCount) || palette.length, palette.length, opaqueCount));
-    const mappedData = emptyGrid();
-
-    try {
-        const histogramImage = imageQUtils.PointContainer.fromUint8Array(
-            Uint8Array.from(opaqueRgba),
-            opaqueCount,
-            1
-        );
-        const wuPalette = buildPaletteSync([histogramImage], {
-            colorDistanceFormula: 'ciede2000',
-            paletteQuantization: 'wuquant',
-            colors: colorLimit,
-        });
-        const wuColors = wuPalette.getPointContainer().getPointArray().map((point) => ({
-            r: point.r,
-            g: point.g,
-            b: point.b,
-        }));
-        const beadPalette = snapWuPaletteToBeads(wuColors, palette, paletteLabs);
-        const working = beadPalette.length > 0 ? beadPalette : [fallback];
-        const workingLabs = working.map((color) => rgbToLab(color.rgb));
-
-        for (let j = 0; j < M; j++) {
-            for (let i = 0; i < N; i++) {
-                if (bgMask[j][i]) continue;
-                const rgb = cellRgb[j][i];
-                if (!rgb) continue;
-                const bead = findClosestCiede2000(rgb, working, workingLabs);
-                mappedData[j][i] = { key: bead.key, color: bead.hex };
-            }
-        }
-
-        console.log(
-            `Pixel grid calculation complete for mode: perceptual (image-q WuQuant + nearest, ${working.length} beads, background punched)`
-        );
-        return mappedData;
-    } catch (error) {
-        console.error('image-q perceptual quantize failed, falling back to nearest CIEDE2000:', error);
-        for (let j = 0; j < M; j++) {
-            for (let i = 0; i < N; i++) {
-                if (bgMask[j][i]) continue;
-                mappedData[j][i] = { ...withoutBg[j][i], isExternal: false };
-            }
-        }
-        return mappedData;
-    }
+    const mappedData = remapGridWithWuQuant(
+        cellRgb,
+        bgMask,
+        palette,
+        paletteLabs,
+        fallback,
+        maxColorCount
+    );
+    console.log('Pixel grid calculation complete for mode: perceptual (image-q WuQuant + nearest, background punched)');
+    return mappedData;
 } 
