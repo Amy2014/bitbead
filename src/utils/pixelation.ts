@@ -12,7 +12,7 @@ export enum PixelationMode {
 }
 
 // 定义色号系统类型
-export type ColorSystem = 'MARD' | 'MARD221' | 'COCO' | '漫漫' | '盼盼' | '咪小窝';
+export type ColorSystem = 'MARD' | 'MARD221' | 'MARD221社区' | 'COCO' | '漫漫' | '盼盼' | '咪小窝';
 
 // --- 必要的类型定义 ---
 export interface RgbColor {

@@ -137,10 +137,10 @@ export default function PatternOcrCalibratePanel({
         .filter((group) => group.id !== EMPTY_ID)
         .map((group) => ({
           ...group,
-          mardKey: getColorKeyByHex(group.hex, 'MARD221'),
+          mardKey: getColorKeyByHex(group.hex, selectedColorSystem),
         }))
         .filter((group) => group.mardKey && group.mardKey !== '?'),
-    [groups]
+    [groups, selectedColorSystem]
   );
 
   const cellId = (row: number, col: number) => `${row}:${col}`;
@@ -218,7 +218,7 @@ export default function PatternOcrCalibratePanel({
   };
 
   const changeCode = () => {
-    const hex = getHexByMard221Key(targetKey);
+    const hex = getHexByMard221Key(targetKey, selectedColorSystem);
     if (!hex) {
       alert('色号不在 MARD221 词典中。');
       return;

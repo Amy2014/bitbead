@@ -32,6 +32,7 @@ import {
   getColorKeyByHex,
   getMardToHexMapping,
   getMard221Palette,
+  getMard221CommunityPalette,
   sortColorsByHue,
   ColorSystem 
 } from '../utils/colorSystemUtils';
@@ -151,6 +152,7 @@ const fullBeadPalette: PaletteColor[] = Object.entries(mardToHexMapping)
   .filter((color): color is PaletteColor => color !== null);
 
 const mard221BeadPalette: PaletteColor[] = getMard221Palette();
+const mard221CommunityBeadPalette: PaletteColor[] = getMard221CommunityPalette();
 
 // ++ Add definition for background color keys ++
 
@@ -598,7 +600,12 @@ export default function Home() {
   // ++ Add a ref for the main element ++
   const mainRef = useRef<HTMLElement>(null);
 
-  const catalogPalette = selectedColorSystem === 'MARD221' ? mard221BeadPalette : fullBeadPalette;
+  const catalogPalette =
+    selectedColorSystem === 'MARD221'
+      ? mard221BeadPalette
+      : selectedColorSystem === 'MARD221社区'
+        ? mard221CommunityBeadPalette
+        : fullBeadPalette;
   const editLibraryPalette = useMemo(
     () => convertPaletteToColorSystem(catalogPalette, selectedColorSystem),
     [catalogPalette, selectedColorSystem]
